@@ -1,0 +1,178 @@
+# 2025/02/07 a new version SolarDataset for hmi and 10 aia modals.
+from tqdm import tqdm
+import numpy as np
+import torch
+from torch.utils.data import Dataset
+from torchvision import transforms
+
+from data.utils import read_pt_image as read_image
+from data.utils import load_list, get_modal_dir
+
+     
+def transfer_log1p(input_array, log1p_scale = 1):
+    if isinstance(input_array,np.ndarray):
+        return np.sign(input_array)*np.log1p(np.abs(input_array))
+    elif isinstance(input_array,torch.Tensor):
+        return torch.sign(input_array)*torch.log1p(log1p_scale*torch.abs(input_array))
+    else:
+        raise ValueError('input_array should be numpy array or torch tensor')
+
+def image_preprocess(image_list, image_size = 224, p_flip = 0.5, p_rotate = 90):
+    N = len(image_list)
+    channels = np.zeros(N, dtype=int)
+    for i in range(N):
+        image = image_list[i]
+        if isinstance(image, np.ndarray):
+            image = np.nan_to_num(image, nan=0.0)
+            transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Resize(image_size),
+            ])
+            image = transform(image)
+            image_list[i] = image
+        elif isinstance(image, torch.Tensor):
+            image = image.unsqueeze(0)
+            transform = transforms.Compose([
+                transforms.Resize(image_size),
+            ])
+            image = transform(image)
+            image_list[i] = image
+        else:
+            raise ValueError('image should be numpy array or torch tensor')
+        channels[i]=image.shape[0]
+    
+    image = torch.cat(image_list, dim=0)
+    transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(p_flip),
+            transforms.RandomVerticalFlip(p_flip),
+            transforms.RandomRotation(p_rotate),
+        ]) 
+    image = transform(image)
+
+    for i in range(N):
+        image_list[i] = image[channels[:i].sum():channels[:i+1].sum()]
+
+    image = torch.stack(image_list, dim=0)
+    return image
+
+def enhance_funciton(image, enhance_type = 'log1p', rescale_value = 1, log1p_scale = 1):
+    
+    if enhance_type == 'log1p':
+        image = transfer_log1p(image, log1p_scale)
+    elif enhance_type == 'None':
+        pass
+    else:
+        raise ValueError('enhance_type should be log1p or None')
+    
+    image = image*rescale_value
+    return image
+
+
+class singlemodal_dataset(Dataset):
+    def __init__(self, modal, exist_idx: np.ndarray):
+
+        self.modal = modal
+        self.exist_idx = exist_idx
+
+    def __len__(self):
+        return len(self.exist_idx)
+
+    def load_images(self, idx_list):
+        image_list = {}
+        for idx in tqdm(idx_list, desc=f'Loading {self.modal} images'):
+            if self.exist_idx[idx] == False:
+                continue
+            idx = int(idx)
+            path = get_modal_dir(self.modal, idx)[1]
+            img = read_image(path)
+            image_list[idx] = img
+        return image_list
+    
+    def __getitem__(self, idx):
+        idx = int(idx)
+        img_path = get_modal_dir(self.modal, idx)[1]
+        is_exist = self.exist_idx[idx]
+        return img_path, is_exist
+
+
+class multimodal_dataset(Dataset):
+    def __init__(self, modal_list = ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500'],
+                  log1p_scale = 1,
+                  load_imgs = False, 
+                  enhance_list = [224,0.5,90], 
+                  time_interval = [0,5400], # (2024/12/31 - 2010/05/01) = 5358 days
+                  time_step = 1): #time_step = 1 means get every data
+        # 定义数据集
+        self.dataset = []
+        self.modal_list = modal_list 
+        self.log1p_scale = log1p_scale
+        self.enhance_list = enhance_list
+        for name in modal_list:
+            if not name in ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']:
+                raise ValueError(f'{name} not supported')
+            idx = load_list(f'./data/idx_list/{name}_exist_idx.pkl')
+            self.dataset.append(singlemodal_dataset(name,idx))
+
+        # find the all exist index
+        exist_list = []
+        for i in range(len(self.dataset)):
+            dataset = self.dataset[i]
+            exist_list.append(dataset.exist_idx)
+            print(f' {modal_list[i]} has {np.sum(exist_list[i])} samples')
+        # first test, if all modal has the same exist data
+        self.exist_idx = self.filter_exist_idx(exist_list, time_interval, time_step)
+        print(f'All modal has {len(self.exist_idx)} samples at the same time')
+
+        self.load_imgs = load_imgs
+        if load_imgs: # todo this function should be deleted
+            list_of_image_dic = []
+            for i in range(len(self.dataset)):
+                list_of_image_dic.append(self.dataset[i].load_images(self.exist_idx))
+            del self.dataset
+            self.image_dic = {}
+            for idx in tqdm(self.exist_idx, desc='Merging images'):
+                self.image_dic[idx] = image_preprocess([image_dic[idx] for image_dic in list_of_image_dic], image_size = enhance_list[0], p_flip = enhance_list[1], p_rotate = enhance_list[2])
+                for image_dic in list_of_image_dic:
+                    del image_dic[idx]
+            del list_of_image_dic
+
+    def filter_exist_idx(self, exist_list, time_interval, time_step):
+        exist_list = np.array(exist_list)
+        exist_idx = np.all(exist_list,axis=0)
+        exist_idx = np.nonzero(exist_idx)[0] # get the index of all exist data
+        # second test, if the idx follows the time interval
+        exist_idx = exist_idx[exist_idx>=time_interval[0]]
+        exist_idx = exist_idx[exist_idx<time_interval[1]]
+        exist_idx = exist_idx[exist_idx%time_step==0]
+        # exist_idx = exist_idx[::time_step]
+
+        return exist_idx
+
+    def __len__(self):
+        return len(self.exist_idx)
+    
+    def __getitem__(self, idx):
+        if self.load_imgs:
+            return self.image_dic[self.exist_idx[idx]]
+        else:
+            image_list = []
+            for i in range(len(self.dataset)):
+                path,_ = self.dataset[i][self.exist_idx[idx]]
+                img = read_image(path)
+                image_list.append(img)
+            image = image_preprocess(image_list, image_size = self.enhance_list[0], p_flip = self.enhance_list[1], p_rotate = self.enhance_list[2])
+            image = enhance_funciton(image, enhance_type = 'log1p', rescale_value = 1, log1p_scale=self.log1p_scale)
+            return image # torch.Size([modal_num, channel_num, image_size, image_size])
+
+if __name__ == '__main__':
+
+    dataset = multimodal_dataset(modal_list=['hmi','0094'], load_imgs=True, enhance_list=[224,0.5,90],time_interval=[0,7452000],time_step=60)
+    # print(len(dataset))
+    # start_date = transfer_date_to_id(2010, 5, 1)
+    # end_date = transfer_date_to_id(2020, 6, 30)
+    # time_interval = [start_date, end_date]
+
+    # start_date = transfer_date_to_id(2020, 6, 30)
+    # end_date = transfer_date_to_id(2024, 6, 30)
+    # time_interval = [start_date, end_date]
+    # dataset = multimodal_dataset(modal_list, load_imgs, enhance_list, time_interval,time_step)

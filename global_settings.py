@@ -1,0 +1,1 @@
+DATA_ROOT = "/mnt/tianwen-tianqing-nas/tianwen/ctf/data"
