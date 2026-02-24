@@ -144,6 +144,7 @@ def build_custom_vit_b64(
 	num_patches_w: int=16,
 	num_patches_h: int=16,
 	weights: Optional[ViT_B_16_Weights] = ViT_B_16_Weights.IMAGENET1K_V1,
+	cache_dir: Optional[str] = './checkpoints/opensource',
 ) -> nn.Module:
 	"""
 	Build a pretrained torchvision ViT-B/16 adapted for custom patchify,
@@ -158,6 +159,8 @@ def build_custom_vit_b64(
 	Returns:
 		Model with replaced patchify and position embeddings.
 	"""
+	if cache_dir is not None:
+		torch.hub.set_dir(cache_dir)
 	model = load_torchvision_vit_b16(weights=weights)
 	model = replace_patchify(
 		model=model,
@@ -172,3 +175,11 @@ def build_custom_vit_b64(
 	)
 	model.encoder.pos_embedding = nn.Parameter(new_pos_embed)
 	return model
+
+
+if __name__ == "__main__":
+	vit_model = build_custom_vit_b64()
+	print(vit_model)
+	random_input = torch.randn(1,1,1024,1024)
+	output = vit_model.conv_proj(random_input)
+	print(output.shape)
