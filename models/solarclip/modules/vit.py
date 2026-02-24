@@ -1,209 +1,174 @@
-from collections import OrderedDict
+from __future__ import annotations
+
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
-
-from einops import rearrange
-
-class LayerNorm(nn.LayerNorm):
-   #使用的时候需要指定特征维度大小
-   #处理float16数据 
-   def forward(self, x: torch.Tensor) -> torch.Tensor:
-      orig_tpye = x.dtype
-      ret = super().forward(x.type(torch.float32))
-
-      return ret.type(orig_tpye)
-   
-class patch_norm(nn.Module):
-    def __init__(self, d_model = 768, norm_type = 'bn1d', eps = 1e-5):
-        super().__init__()
-        self.norm_type = norm_type
-        if norm_type == 'bn1d':
-            self.norm = nn.BatchNorm1d(d_model, eps)
-        elif norm_type == 'ln':
-            self.norm = nn.LayerNorm(d_model, eps)
-        else:
-            raise ValueError('norm_type should be bn1d or ln')
-
-    def forward(self, x):
-        # x.size: (b, num_patches, d_model) (b (n_t n_h n_w) d)
-        # x shape: (batch_size, num_frames, num_patches, d_model)
-        if self.norm_type == 'bn1d':
-            x = rearrange(x, 'b p d -> b d p')
-            x = self.norm(x)
-            x = rearrange(x, 'b d p -> b p d')
-        elif self.norm_type == 'ln':
-            x = self.norm(x)
-        else:
-            raise ValueError('norm_type should be bn1d or ln')
-        return x
-
-class QuickGELU(nn.Module):
-    def forward(self, x: torch.Tensor):
-        return x * torch.sigmoid(1.702 * x) #GELU的近似计算，GELU是激活函数，用于神经网络的非线性变换
-    
-class Encoder(nn.Module):
-    def __init__(self, 
-                 input_size: int = 1024,
-                 embed_dim: int = 768,
-                 input_dim: int = 1,
-                 patch_size: int = 64,
-                 dropout_prob: float = 0.1):
-        super().__init__()
-        if input_size % patch_size != 0:
-            raise ValueError(f"Image size {input_size} must be divisible by patch size {patch_size}, now is not divisible.")
-        self.conv1 = nn.Conv2d(in_channels=input_dim, out_channels=embed_dim, kernel_size=patch_size, stride=patch_size, bias=False)
-        self.ln_pre = patch_norm(d_model = embed_dim, norm_type = 'bn1d')
-        self.dropout = nn.Dropout(dropout_prob)
-
-    def forward(self, x: torch.Tensor):
-        x = self.conv1(x) # (B,C,H,W) -> (B,D,H/patch_size,W/patch_size)
-        x = x.reshape(x.shape[0], x.shape[1], -1) # (B, D, H/patch_size, W/patch_size) -> (B, D, L=H/patch_size*W/patch_size)
-        x = x.permute(0, 2, 1) # (B, D, L) -> (B, L, D)
-        x = self.ln_pre(x) # (B, L, D) -> (B, L, D)
-        x = self.dropout(x) # (B, L, D) -> (B, L, D)
-        return x
-    
-class ResidualAttentionBlock(nn.Module):
-    def __init__(self, d_model: int, n_head: int, attn_mask: torch.Tensor = None, norm_type: str = 'bn1d'):
-        super().__init__()
-
-        self.attn = nn.MultiheadAttention(d_model, n_head)
-        self.ln_1 = patch_norm(d_model = d_model, norm_type = norm_type)
-        self.mlp = nn.Sequential(OrderedDict([ 
-            ("c_fc", nn.Linear(d_model, d_model * 4)),  
-            ("gelu", QuickGELU()),
-            ("c_proj", nn.Linear(d_model * 4, d_model))
-        ]))
-        self.ln_2 = patch_norm(d_model = d_model, norm_type = norm_type)
-        self.attn_mask = attn_mask
-
-    def attention(self, x: torch.Tensor):
-        self.attn_mask = self.attn_mask.to(dtype=x.dtype, device=x.device) if self.attn_mask is not None else None
-        return self.attn(x, x, x, need_weights=False, attn_mask=self.attn_mask)[0]
-
-    def forward(self, x: torch.Tensor):
-        x = x + self.attention(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
-        return x
-
-class Transformer(nn.Module):
-   def __init__(self, width: int, layers: int, heads: int, drop_out: float=0.0, attn_mask: torch.tensor = None):
-      super().__init__()
-      self.width = width
-      self.layers = layers
-      self.resblocks = nn.Sequential(*[ResidualAttentionBlock(width, heads, attn_mask) for _ in range(layers)])
-      self.dropout = nn.Dropout(drop_out)
-
-   def forward(self, x: torch.Tensor):
-      
-      return self.resblocks(x)
-
-class VisionTransformer(nn.Module):
-    def __init__(self, in_channels, input_resolution: int, patch_size: int, width: int, layers: int, heads: int, output_dim: int,
-                token_type: str , norm_type: str = 'bn1d'):
-        super().__init__()
-        self.transformer_token_type = token_type
-        self.conv1 = Encoder(input_dim=in_channels, embed_dim=width, input_size=input_resolution, patch_size=patch_size, dropout_prob=0.1)
-
-        scale = width ** -0.5
-        self.class_embedding = nn.Parameter(scale * torch.randn(width))
-        self.positional_embedding = nn.Parameter(scale * torch.randn((input_resolution // patch_size) ** 2 + 1, width))
-        self.ln_pre = patch_norm(width, norm_type)
-
-        self.transformer = Transformer(width, layers, heads)
-
-        self.ln_post = patch_norm(width, norm_type)
-        self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
-
-    def forward(self, x: torch.Tensor):
-        x = self.conv1(x)
-        
-        x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
-        x = x + self.positional_embedding.to(x.dtype)
-        x = self.ln_pre(x)
-
-        #! donot permute here, we focus on the global feature
-        # x = x.permute(1, 0, 2)  # BLD -> LBD
-        x = self.transformer(x)
-        # x = x.permute(1, 0, 2)  # LBD -> BLD
-
-        if self.transformer_token_type == 'class embedding':
-            x = self.ln_post(x[:, 0,:]) 
-            # return [N, align_dim]
-        elif self.transformer_token_type == 'all embedding':
-            x = self.ln_post(x)
-            # return [N, L+1, align_dim]
-
-        if self.proj is not None:
-            x = x @ self.proj   
-
-        return x
-
-    def get_last_selfattention(self, x):
-        x = self.conv1(x)
-        
-        x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
-        x = x + self.positional_embedding.to(x.dtype)
-        x = self.ln_pre(x)
-
-        x = self.transformer(x)
-
-        return x
- 
-class BaseVisionTransformer(nn.Module):
-    def __init__(self, 
-                 input_dim: int,
-                 width: int, layers: int, heads: int, 
-                 output_dim: int,
-                 token_type: str, norm_type: str = 'bn1d'):
-        super().__init__()
-        self.input_dim = input_dim
-        self.width = width
-        self.layers = layers
-        self.heads = heads
-        self.output_dim = output_dim
-        self.token_type = token_type
-        self.norm_type = norm_type
-
-        self.proj_in = nn.Parameter(torch.zeros(input_dim, width))
-        self.class_embedding = nn.Parameter(torch.zeros(width))
-        self.positional_embedding = nn.Parameter(torch.zeros((1, width)))
-        self.ln_pre = patch_norm(width, norm_type)
-
-        self.transformer = Transformer(width, layers, heads)
-
-        self.ln_post = patch_norm(width, norm_type)
-        self.proj_out = nn.Parameter(torch.zeros(width, output_dim))
-
-    def forward(self, x: torch.Tensor):
-        """
-        x: [N, L, C]
-        output: [N, L+1, output_dim] if token_type == 'all embedding' else [N, output_dim]
-        """
-        x = x @ self.proj_in
-        
-        x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
-        x = x + self.positional_embedding.to(x.dtype)
-
-        x = self.ln_pre(x)
-        x = self.transformer(x)
-
-        if self.token_type == 'class embedding':
-            x = self.ln_post(x[:, 0,:]) 
-            # return [N, align_dim]
-        elif self.token_type == 'all embedding':
-            x = self.ln_post(x)
-            # return [N, L+1, align_dim]
-
-        if self.proj_out is not None:
-            x = x @ self.proj_out
-
-        return x
+import torch.nn.functional as F
+from torchvision.models import ViT_B_16_Weights, vit_b_16
 
 
-class Remove_class_token(nn.Module):
-    def __init__(self):
-        super().__init__()
-    def forward(self, x):
-        return x[:, 1:, :]
+def load_torchvision_vit_b16(
+	weights: Optional[ViT_B_16_Weights] = ViT_B_16_Weights.IMAGENET1K_V1,
+) -> nn.Module:
+	"""Load torchvision ViT-B/16 with optional pretrained weights."""
+	return vit_b_16(weights=weights)
+
+
+def _init_by_interpolate(
+	dst_weight: torch.Tensor,
+	src_weight: torch.Tensor,
+	new_kh: int,
+	new_kw: int,
+) -> None:
+	"""Interpolate src_weight to match dst_weight spatial size (in-place)."""
+	interpolated = F.interpolate(
+		src_weight,
+		size=(new_kh, new_kw),
+		mode="bicubic",
+		align_corners=False,
+	)
+	dst_weight.copy_(interpolated)
+
+def replace_patchify(
+	model: nn.Module,
+	in_channels: int,
+	patch_h: int,
+	patch_w: int,
+) -> nn.Module:
+	"""
+	Replace torchvision ViT patchify layer (conv_proj) with custom CxHxW patchify.
+
+	Args:
+		model: torchvision ViT model.
+		in_channels: input channel number C.
+		patch_h: patch height H.
+		patch_w: patch width W.
+	"""
+	old_conv = model.conv_proj
+	if not isinstance(old_conv, nn.Conv2d):
+		raise TypeError("model.conv_proj is expected to be nn.Conv2d")
+
+	new_conv = nn.Conv2d(
+		in_channels=in_channels,
+		out_channels=old_conv.out_channels,
+		kernel_size=(patch_h, patch_w),
+		stride=(patch_h, patch_w),
+		padding=0,
+		bias=old_conv.bias is not None,
+	)
+
+	with torch.no_grad():
+		old_weight = old_conv.weight
+		old_c = old_weight.shape[1]
+		old_kh, old_kw = old_weight.shape[-2:]
+
+		if in_channels == old_c:
+			if (old_kh, old_kw) == (patch_h, patch_w):
+				new_conv.weight.copy_(old_weight)
+			else:
+				_init_by_interpolate(new_conv.weight, old_weight, patch_h, patch_w)
+		elif in_channels > old_c:
+			if (old_kh, old_kw) == (patch_h, patch_w):
+				new_conv.weight[:, :old_c] = old_weight
+			else:
+				_init_by_interpolate(new_conv.weight[:, :old_c], old_weight, patch_h, patch_w)
+			extra = in_channels - old_c
+			mean_channel = old_weight.mean(dim=1, keepdim=True)
+			_init_by_interpolate(new_conv.weight[:, old_c:], mean_channel.expand(-1, extra, -1, -1), patch_h, patch_w)
+		else:
+			if (old_kh, old_kw) == (patch_h, patch_w):
+				new_conv.weight.copy_(old_weight[:, :in_channels])
+			else:
+				_init_by_interpolate(new_conv.weight, old_weight[:, :in_channels], patch_h, patch_w)
+
+		if old_conv.bias is not None:
+			new_conv.bias.copy_(old_conv.bias)
+
+	model.conv_proj = new_conv
+	return model
+
+
+def interpolate_pos_embedding(
+	model: nn.Module,
+	num_patches_w: int,
+	num_patches_h: int,
+) -> torch.Tensor:
+	"""
+	Interpolate ViT positional embedding to a new patch grid size.
+
+	Args:
+		model: torchvision ViT model.
+		num_patches_w: number of patches along width.
+		num_patches_h: number of patches along height.
+
+	Returns:
+		Interpolated positional embedding tensor with shape
+		[1, 1 + num_patches_h * num_patches_w, hidden_dim].
+	"""
+	pos_embed = model.encoder.pos_embedding
+	if pos_embed.ndim != 3:
+		raise ValueError("Expected model.encoder.pos_embedding to be [1, N, D]")
+
+	cls_token = pos_embed[:, :1, :]
+	patch_pos = pos_embed[:, 1:, :]
+
+	old_num_patches = patch_pos.shape[1]
+	old_grid_h = int(old_num_patches**0.5)
+	old_grid_w = old_grid_h
+	if old_grid_h * old_grid_w != old_num_patches:
+		raise ValueError("Original patch positional embedding is not square")
+
+	hidden_dim = patch_pos.shape[-1]
+	patch_pos = patch_pos.reshape(1, old_grid_h, old_grid_w, hidden_dim)
+	patch_pos = patch_pos.permute(0, 3, 1, 2)
+	patch_pos = F.interpolate(
+		patch_pos,
+		size=(num_patches_h, num_patches_w),
+		mode="bicubic",
+		align_corners=False,
+	)
+	patch_pos = patch_pos.permute(0, 2, 3, 1).reshape(
+		1,
+		num_patches_h * num_patches_w,
+		hidden_dim,
+	)
+
+	return torch.cat([cls_token, patch_pos], dim=1)
+
+
+def build_custom_vit_b64(
+	in_channels: int=1,
+	patch_h: int=64,
+	patch_w: int=64,
+	num_patches_w: int=16,
+	num_patches_h: int=16,
+	weights: Optional[ViT_B_16_Weights] = ViT_B_16_Weights.IMAGENET1K_V1,
+) -> nn.Module:
+	"""
+	Build a pretrained torchvision ViT-B/16 adapted for custom patchify,
+	with position embeddings already interpolated and replaced in-place.
+	
+	Args:
+		in_channels: Input channel count (default 1 for single modality).
+		patch_h, patch_w: Patch size in pixels.
+		num_patches_h, num_patches_w: Target grid size in patches.
+		weights: Pretrained weights enum.
+	
+	Returns:
+		Model with replaced patchify and position embeddings.
+	"""
+	model = load_torchvision_vit_b16(weights=weights)
+	model = replace_patchify(
+		model=model,
+		in_channels=in_channels,
+		patch_h=patch_h,
+		patch_w=patch_w,
+	)
+	new_pos_embed = interpolate_pos_embedding(
+		model,
+		num_patches_w=num_patches_w,
+		num_patches_h=num_patches_h,
+	)
+	model.encoder.pos_embedding = nn.Parameter(new_pos_embed)
+	return model
