@@ -18,84 +18,12 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 import matplotlib.pyplot as plt
 import numpy as np
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.abspath(os.path.join(current_dir, "../.."))
-print(f"current dir {current_dir}")
-print(f"parent_dir {parent_dir}")
-print(f"cwd {os.getcwd()}")
-sys.path.insert(0, parent_dir)
-project_root = os.path.abspath(os.path.join(current_dir, "../../../../.."))
-sys.path.insert(0, project_root)
-from util import instantiate_from_config
-
-
-if torch.cuda.is_available():
-    gpu_name = torch.cuda.get_device_name(0)
-    if "A40" in gpu_name or "A100" in gpu_name:
-        torch.set_float32_matmul_precision('high') # highest, high, medium
-        print(f'device is {gpu_name}, set float32_matmul_precision to high')
+from .util import instantiate_from_config
 
 # config
 # 1. model config
 # 2. data config
 # 3. train config
-
-def get_parser(**parser_kwargs):
-    parser = argparse.ArgumentParser(**parser_kwargs)    
-    parser.add_argument(
-        "-n",
-        "--name",
-        type=str,
-        const=True,
-        default="",
-        nargs="?",
-        help="postfix for logdir",
-    )
-    parser.add_argument(
-        "-r",
-        "--resume",
-        type=str,
-        const=True,
-        default="",
-        nargs="?",
-        help="resume traning from logdir or checkpoint in logdir",
-    )
-    parser.add_argument(
-        "-c",
-        "--config",
-        nargs="*",
-        metavar="",
-        help="paths to base configs. Loaded from left-to-right. "
-             "Parameters can be overwritten or added with command-line options of the form `--key value`.",
-        default=['configs/train_configs/reconmodels/autoencoder/jointvae/JointVAE.yaml']
-    )
-    parser.add_argument(
-        "-f",
-        "--postfix",
-        type=str,
-        default="",
-        help="post-postfix for default name",
-    )
-    parser.add_argument(
-        "--logdir",
-        type=str,
-        default="logs/reconmodels/autoencoder/jointvae",
-        help="log directory",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="random seed",
-    )
-    parser.add_argument(
-        "--logger",
-        type=str,
-        default="tensorboard",
-        help="pytorch lightning logger type",
-    )
-
-    return parser
 
 class multi_model(pl.LightningModule):
     """
@@ -526,20 +454,3 @@ def train(config, opt):
         trainer.fit(model, train_dataloader, val_dataloader, ckpt_path=resume_path)
     else:
         trainer.fit(model, train_dataloader, val_dataloader)
-
-
-
-
-if __name__ == "__main__":
-    # ckpt_paths should have same order with data make config yaml can be load from cli.
-    parser = get_parser()
-    opt, unknown = parser.parse_known_args()
-    config = OmegaConf.load(opt.config[0]) 
-
-    train(config, opt)
-    print("Training finished")
-    
-    
-    
-
-   

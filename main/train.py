@@ -7,8 +7,7 @@ from pytorch_lightning.trainer import Trainer
 from pytorch_lightning import seed_everything
 from pytorch_lightning.loggers import WandbLogger
 
-from models.reconmodels.autoencoder.util import instantiate_from_config
-from main.utils.util import TrainerSetup
+from .utils.util import instantiate_from_config, TrainerSetup
 
 
 def get_parser(**parser_kwargs):
@@ -210,10 +209,9 @@ if __name__ == "__main__":
         trainer_config, trainer_kwargs = trainer_setup.trainer_config, trainer_setup.trainer_kwargs
         print(f'before trainer init {trainer_config}')
         if opt.use_wandb:
-        # trainer = Trainer(**trainer_config, strategy='ddp_find_unused_parameters_true', logger=trainer_kwargs["logger"], callbacks=trainer_kwargs["callbacks"])
             trainer = Trainer(**trainer_config, strategy='ddp_find_unused_parameters_true', logger=wandb_logger, callbacks=trainer_kwargs["callbacks"])
         else:
-            trainer = Trainer(**trainer_config, strategy='ddp_find_unused_parameters_true', logger=trainer_kwargs["logger"], callbacks=trainer_kwargs["callbacks"],)
+            trainer = Trainer(**trainer_config, strategy='ddp_find_unused_parameters_true', logger=trainer_kwargs["logger"], callbacks=trainer_kwargs["callbacks"])
         
         #### run training
         try:
