@@ -5,8 +5,8 @@ import torch.nn as nn
 import numpy as np
 from einops import rearrange
 
-from ldm.util import instantiate_from_config
-from ldm.modules.attention import LinearAttention
+from auxiliary.ldm.util import instantiate_from_config
+from auxiliary.ldm.modules.attention import LinearAttention
 
 
 def get_timestep_embedding(timesteps, embedding_dim):
@@ -36,6 +36,10 @@ def nonlinearity(x):
 
 
 def Normalize(in_channels, num_groups=32):
+    while num_groups > in_channels//2:
+        num_groups //= 2
+    if num_groups == 0:
+        num_groups = 1
     return torch.nn.GroupNorm(num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True)
 
 

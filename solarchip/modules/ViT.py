@@ -5,398 +5,136 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models import ViT_B_16_Weights, vit_b_16
 import pytorch_lightning as pl
 
-
-def load_torchvision_vit_b16(
-	weights: Optional[ViT_B_16_Weights] = ViT_B_16_Weights.IMAGENET1K_V1,
-) -> nn.Module:
-	"""Load torchvision ViT-B/16 with optional pretrained weights."""
-	return vit_b_16(weights=weights)
+from auxiliary.clip.model import VisionTransformer as clipvit
+from auxiliary.clip.model import LayerNorm, Transformer
 
 
-def _init_by_interpolate(
-	dst_weight: torch.Tensor,
-	src_weight: torch.Tensor,
-	new_kh: int,
-	new_kw: int,
-) -> None:
-	"""Interpolate src_weight to match dst_weight spatial size (in-place)."""
-	interpolated = F.interpolate(
-		src_weight,
-		size=(new_kh, new_kw),
-		mode="bicubic",
-		align_corners=False,
-	)
-	dst_weight.copy_(interpolated)
+class Encoder(clipvit):
+    """
+    Modified ViT encoder that outputs token features without the classification head.
+    """
 
-def replace_patchify(
-	model: nn.Module,
-	in_channels: int,
-	patch_h: int,
-	patch_w: int,
-) -> nn.Module:
-	"""
-	Replace torchvision ViT patchify layer (conv_proj) with custom CxHxW patchify.
+    def __init__(self, input_dim: int, input_resolution: int, patch_size: int, hidden_dim: int, layers: int, heads: int):
+        super().__init__(input_resolution, patch_size, hidden_dim, layers, heads, 1)
+        self.proj = None  # remove the projection head
+        self.conv1 = nn.Conv2d(in_channels=input_dim, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size, bias=False)
 
-	Args:
-		model: torchvision ViT model.
-		in_channels: input channel number C.
-		patch_h: patch height H.
-		patch_w: patch width W.
-	"""
-	old_conv = model.conv_proj
-	if not isinstance(old_conv, nn.Conv2d):
-		raise TypeError("model.conv_proj is expected to be nn.Conv2d")
+    def forward(self, x: torch.Tensor):
+        x = self.conv1(x)  # shape = [*, hidden_dim, grid, grid]
+        x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, hidden_dim, grid ** 2]
+        x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, hidden_dim]
+        x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, hidden_dim]
+        x = x + self.positional_embedding.to(x.dtype)
+        x = self.ln_pre(x)
 
-	new_conv = nn.Conv2d(
-		in_channels=in_channels,
-		out_channels=old_conv.out_channels,
-		kernel_size=(patch_h, patch_w),
-		stride=(patch_h, patch_w),
-		padding=0,
-		bias=old_conv.bias is not None,
-	)
+        x = x.permute(1, 0, 2)  # BLD -> LBD
+        x = self.transformer(x)
+        x = x.permute(1, 0, 2)  # LBD -> BLD
 
-	with torch.no_grad():
-		old_weight = old_conv.weight
-		old_c = old_weight.shape[1]
-		old_kh, old_kw = old_weight.shape[-2:]
+        # x = self.ln_post(x[:, 0, :]) # originally only return the cls token, but we want to return all tokens
+        x = self.ln_post(x)
 
-		if in_channels == old_c:
-			if (old_kh, old_kw) == (patch_h, patch_w):
-				new_conv.weight.copy_(old_weight)
-			else:
-				_init_by_interpolate(new_conv.weight, old_weight, patch_h, patch_w)
-		elif in_channels > old_c:
-			if (old_kh, old_kw) == (patch_h, patch_w):
-				new_conv.weight[:, :old_c] = old_weight
-			else:
-				_init_by_interpolate(new_conv.weight[:, :old_c], old_weight, patch_h, patch_w)
-			extra = in_channels - old_c
-			mean_channel = old_weight.mean(dim=1, keepdim=True)
-			_init_by_interpolate(new_conv.weight[:, old_c:], mean_channel.expand(-1, extra, -1, -1), patch_h, patch_w)
-		else:
-			if (old_kh, old_kw) == (patch_h, patch_w):
-				new_conv.weight.copy_(old_weight[:, :in_channels])
-			else:
-				_init_by_interpolate(new_conv.weight, old_weight[:, :in_channels], patch_h, patch_w)
+        return x
 
-		if old_conv.bias is not None:
-			new_conv.bias.copy_(old_conv.bias)
+class Decoder(nn.Module):
+    def __init__(self, input_dim:int, input_resolution: int, patch_size: int, hidden_dim: int, layers: int, heads: int):
+        super().__init__()
+        self.patch_size = patch_size
+        self.input_resolution = input_resolution
+        self.input_dim = input_dim
+        # self.conv1 = nn.Conv2d(in_channels=3, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size, bias=False)
+        self.de_proj = nn.Linear(hidden_dim, input_dim * patch_size * patch_size)
 
-	model.conv_proj = new_conv
-	return model
+        self.ln_pre = LayerNorm(hidden_dim)
+        self.transformer = Transformer(hidden_dim, layers, heads)
+
+    def forward(self, x: torch.Tensor):
+        assert x.dim() == 3, "Input to decoder should be of shape [B, L, D]"
+        assert x.shape[1] == (self.input_resolution // self.patch_size) ** 2 + 1, f"Input to decoder should have {self.input_resolution // self.patch_size ** 2 + 1} tokens, but got {x.shape[1]}"
+
+        x = x[:, 1:, :]  # remove the cls token
+        x = self.ln_pre(x)
+        x = x.permute(1, 0, 2)  # BLD -> LBD
+        x = self.transformer(x)
+        x = x.permute(1, 0, 2)  # LBD -> BLD
+
+        x = self.de_proj(x)  # shape = [B, L, input_dim * patch_size * patch_size]
+        x = x.reshape(x.shape[0], self.input_dim, self.input_resolution, self.input_resolution)  # shape = [B, input_dim, input_resolution, input_resolution]
+
+        return x
 
 
-def interpolate_pos_embedding(
-	model: nn.Module,
-	num_patches_w: int,
-	num_patches_h: int,
-) -> torch.Tensor:
-	"""
-	Interpolate ViT positional embedding to a new patch grid size.
+class AE_ViT(pl.LightningModule):
+    def __init__(self,
+                 contrastive_dim,
+                 ddconfig,
+                 ckpt_path=None,
+                 ignore_keys=[],
+                 **ignore_kwargs
+                 ):
+        super().__init__()
+        print(f"Initializing AutoencoderViT with input_shape : Bx{ddconfig['input_dim']}x{ddconfig['input_resolution']}x{ddconfig['input_resolution']}, patch_size: {ddconfig['patch_size']}, hidden_dim: {ddconfig['hidden_dim']}")
+        print(f"The corresponding latent shape is Bx{(ddconfig['input_resolution'] // ddconfig['patch_size']) ** 2 + 1}x{ddconfig['hidden_dim']} (with cls token)")
+        hidden_dim = ddconfig['hidden_dim']
+        scale = hidden_dim ** -0.5
+        self.contrasive_porject = nn.Parameter(scale * torch.randn(hidden_dim, contrastive_dim))
+        self.encoder = Encoder(**ddconfig)
+        self.decoder = Decoder(**ddconfig)
+        if ckpt_path is not None:
+            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
 
-	Args:
-		model: torchvision ViT model.
-		num_patches_w: number of patches along width.
-		num_patches_h: number of patches along height.
+    def init_from_ckpt(self, path, ignore_keys=list()):
+        sd = torch.load(path, map_location="cpu")["state_dict"]
+        keys = list(sd.keys())
+        for k in keys:
+            for ik in ignore_keys:
+                if k.startswith(ik):
+                    print("Deleting key {} from state_dict.".format(k))
+                    del sd[k]
+        self.load_state_dict(sd, strict=False)
+        print(f"Restored from {path}")
 
-	Returns:
-		Interpolated positional embedding tensor with shape
-		[1, 1 + num_patches_h * num_patches_w, hidden_dim].
-	"""
-	pos_embed = model.encoder.pos_embedding
-	if pos_embed.ndim != 3:
-		raise ValueError("Expected model.encoder.pos_embedding to be [1, N, D]")
+    def encode(self, x): # return
+        # x: [B, C, H, W]
+        enc = self.encoder(x)
+        # enc: [B, N, D] where N can be patch count or patch count + 1 (with cls token)
+        return enc
 
-	cls_token = pos_embed[:, :1, :]
-	patch_pos = pos_embed[:, 1:, :]
+    def decode(self, z):
+        dec = self.decoder(z)
+        return dec
+    
+    def contrastive_projection(self, z):
+        # z: [B, N, D]
+        # return: [B, N, contrastive_dim]
+        return z @ self.contrasive_porject
 
-	old_num_patches = patch_pos.shape[1]
-	old_grid_h = int(old_num_patches**0.5)
-	old_grid_w = old_grid_h
-	if old_grid_h * old_grid_w != old_num_patches:
-		raise ValueError("Original patch positional embedding is not square")
+    def forward(self, input):
+        z = self.encode(input)
+        dec = self.decode(z)
+        return dec
 
-	hidden_dim = patch_pos.shape[-1]
-	patch_pos = patch_pos.reshape(1, old_grid_h, old_grid_w, hidden_dim)
-	patch_pos = patch_pos.permute(0, 3, 1, 2)
-	patch_pos = F.interpolate(
-		patch_pos,
-		size=(num_patches_h, num_patches_w),
-		mode="bicubic",
-		align_corners=False,
-	)
-	patch_pos = patch_pos.permute(0, 2, 3, 1).reshape(
-		1,
-		num_patches_h * num_patches_w,
-		hidden_dim,
-	)
-
-	return torch.cat([cls_token, patch_pos], dim=1)
-
-
-def build_custom_vit_b(
-	in_channels: int=1,
-	patch_h: int=64,
-	patch_w: int=64,
-	num_patches_w: int=16,
-	num_patches_h: int=16,
-	weights: Optional[ViT_B_16_Weights] = ViT_B_16_Weights.IMAGENET1K_V1,
-	cache_dir: Optional[str] = './checkpoints/opensource',
-	**ignore_kwargs
-) -> nn.Module:
-	"""
-	Build a pretrained torchvision ViT-B/16 adapted for custom patchify,
-	with position embeddings already interpolated and replaced in-place.
-	
-	Args:
-		in_channels: Input channel count (default 1 for single modality).
-		patch_h, patch_w: Patch size in pixels.
-		num_patches_h, num_patches_w: Target grid size in patches.
-		weights: Pretrained weights enum.
-	
-	Returns:
-		Model with replaced patchify and position embeddings.
-	"""
-	if cache_dir is not None:
-		torch.hub.set_dir(cache_dir)
-	if patch_h != patch_w:
-		raise ValueError("torchvision ViT requires square patch size; expected patch_h == patch_w")
-	model = load_torchvision_vit_b16(weights=weights)
-	model = replace_patchify(
-		model=model,
-		in_channels=in_channels,
-		patch_h=patch_h,
-		patch_w=patch_w,
-	)
-	new_pos_embed = interpolate_pos_embedding(
-		model,
-		num_patches_w=num_patches_w,
-		num_patches_h=num_patches_h,
-	)
-	model.encoder.pos_embedding = nn.Parameter(new_pos_embed)
-	model.patch_size = patch_h
-	model.image_size = patch_h * num_patches_h
-	return model
-
-class vit_decoder(nn.Module):
-	"""
-	Symmetric decoder for ViT token features.
-
-	Input token shape: [B, N, D] where N can be patch count or patch count + 1 (with cls token).
-	Output image shape: [B, out_channels, num_patches_h * patch_h, num_patches_w * patch_w]
-	"""
-
-	def __init__(
-		self,
-		hidden_dim: int,
-		num_heads: int,
-		mlp_dim: int,
-		num_layers: int,
-		num_patches_h: int,
-		num_patches_w: int,
-		patch_h: int,
-		patch_w: int,
-		out_channels: int = 1,
-		dropout: float = 0.0,
-	) -> None:
-		super().__init__()
-		self.hidden_dim = hidden_dim
-		self.num_layers = num_layers
-		self.num_patches_h = num_patches_h
-		self.num_patches_w = num_patches_w
-		self.patch_h = patch_h
-		self.patch_w = patch_w
-		self.out_channels = out_channels
-		self.seq_len = num_patches_h * num_patches_w
-
-		self.pos_embedding = nn.Parameter(torch.zeros(1, self.seq_len, hidden_dim))
-		nn.init.trunc_normal_(self.pos_embedding, std=0.02)
-
-		self.blocks = nn.ModuleList(
-			[
-				nn.TransformerEncoderLayer(
-					d_model=hidden_dim,
-					nhead=num_heads,
-					dim_feedforward=mlp_dim,
-					dropout=dropout,
-					activation="gelu",
-					batch_first=True,
-					norm_first=True,
-				)
-				for _ in range(num_layers)
-			]
-		)
-		self.norm = nn.LayerNorm(hidden_dim)
-		self.to_patch_pixels = nn.Linear(hidden_dim, out_channels * patch_h * patch_w)
-
-	def forward(self, tokens: torch.Tensor) -> torch.Tensor:
-		if tokens.ndim != 3:
-			raise ValueError(f"Expected tokens as [B, N, D], got shape {tokens.shape}")
-
-		if tokens.shape[-1] != self.hidden_dim:
-			raise ValueError(
-				f"Hidden dim mismatch: decoder expects {self.hidden_dim}, got {tokens.shape[-1]}"
-			)
-
-		if tokens.shape[1] == self.seq_len + 1:
-			tokens = tokens[:, 1:, :]
-		elif tokens.shape[1] != self.seq_len:
-			raise ValueError(
-				f"Token length mismatch: expected {self.seq_len} or {self.seq_len + 1}, got {tokens.shape[1]}"
-			)
-
-		x = tokens + self.pos_embedding
-		for block in self.blocks:
-			x = block(x)
-		x = self.norm(x)
-
-		x = self.to_patch_pixels(x)
-		batch_size = x.shape[0]
-		x = x.view(
-			batch_size,
-			self.num_patches_h,
-			self.num_patches_w,
-			self.out_channels,
-			self.patch_h,
-			self.patch_w,
-		)
-		x = x.permute(0, 3, 1, 4, 2, 5).contiguous()
-		x = x.view(
-			batch_size,
-			self.out_channels,
-			self.num_patches_h * self.patch_h,
-			self.num_patches_w * self.patch_w,
-		)
-		return x
-
-
-def build_symmetric_vit_decoder(
-	encoder_model: nn.Module,
-	num_patches_h: int,
-	num_patches_w: int,
-	patch_h: int,
-	patch_w: int,
-	out_channels: int = 1,
-	**ignore_kwargs
-) -> vit_decoder:
-	"""Build a decoder symmetric to a torchvision ViT encoder."""
-	if not hasattr(encoder_model, "encoder") or not hasattr(encoder_model.encoder, "layers"):
-		raise TypeError("encoder_model must be a torchvision ViT model with encoder.layers")
-
-	if len(encoder_model.encoder.layers) == 0:
-		raise ValueError("encoder_model.encoder.layers is empty")
-
-	first_layer = encoder_model.encoder.layers[0]
-	hidden_dim = getattr(encoder_model, "hidden_dim", first_layer.ln_1.normalized_shape[0])
-	num_heads = first_layer.self_attention.num_heads
-	mlp_dim = first_layer.mlp[0].out_features
-	dropout = first_layer.dropout.p
-	num_layers = len(encoder_model.encoder.layers)
-
-	decoder = vit_decoder(
-		hidden_dim=hidden_dim,
-		num_heads=num_heads,
-		mlp_dim=mlp_dim,
-		num_layers=num_layers,
-		num_patches_h=num_patches_h,
-		num_patches_w=num_patches_w,
-		patch_h=patch_h,
-		patch_w=patch_w,
-		out_channels=out_channels,
-		dropout=dropout,
-	)
-
-	with torch.no_grad():
-		encoder_pos = interpolate_pos_embedding(
-			encoder_model,
-			num_patches_w=num_patches_w,
-			num_patches_h=num_patches_h,
-		)
-		decoder.pos_embedding.copy_(encoder_pos[:, 1:, :])
-
-	return decoder
-
-
-class AutoencoderViT(pl.LightningModule):
-	def __init__(self,
-				 ddconfig,
-				 ckpt_path=None,
-				 ignore_keys=[],
-				 **ignore_kwargs
-				 ):
-		super().__init__()
-		self.encoder = build_custom_vit_b(**ddconfig)
-		self.decoder = build_symmetric_vit_decoder(encoder_model=self.encoder, **ddconfig)
-		if ckpt_path is not None:
-			self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
-
-	def init_from_ckpt(self, path, ignore_keys=list()):
-		sd = torch.load(path, map_location="cpu")["state_dict"]
-		keys = list(sd.keys())
-		for k in keys:
-			for ik in ignore_keys:
-				if k.startswith(ik):
-					print("Deleting key {} from state_dict.".format(k))
-					del sd[k]
-		self.load_state_dict(sd, strict=False)
-		print(f"Restored from {path}")
-
-	def encode(self, x): # return
-		# x: [B, C, H, W]
-		tokens = self.encoder._process_input(x)
-		batch_size = tokens.shape[0]
-		cls_tokens = self.encoder.class_token.expand(batch_size, -1, -1)
-		tokens = torch.cat([cls_tokens, tokens], dim=1)
-		enc = self.encoder.encoder(tokens)
-		# enc: [B, N, D] where N can be patch count or patch count + 1 (with cls token)
-		return enc
-
-	def decode(self, z):
-		dec = self.decoder(z)
-		return dec
-
-	def forward(self, input):
-		z = self.encode(input)
-		dec = self.decode(z)
-		return dec
-
-
-class AutoencoderViT_B_64(AutoencoderViT):
-	def __init__(self, ckpt_path=None, ignore_keys=[]):
-		ddconfig = dict(
-			in_channels=1,
-			patch_h=64,
-			patch_w=64,
-			num_patches_h=16,
-			num_patches_w=16,
-			out_channels=1,
-			weights=ViT_B_16_Weights.IMAGENET1K_V1,
-			cache_dir='./checkpoints/opensource',
-		)
-		super().__init__(ddconfig, ckpt_path=ckpt_path, ignore_keys=ignore_keys)
 
 if __name__ == "__main__":
-	# vit_model = build_custom_vit_b().to("cuda")
-	# random_input = torch.randn(1,1,1024,1024).to("cuda")
-	# logits = vit_model(random_input)
-	# print(logits.shape)
 
-	# with torch.no_grad():
-	# 	tokens = vit_model._process_input(random_input)
-	# 	batch_size = tokens.shape[0]
-	# 	cls_tokens = vit_model.class_token.expand(batch_size, -1, -1)
-	# 	tokens = torch.cat([cls_tokens, tokens], dim=1)
-	# 	output = vit_model.encoder(tokens)
-	# print(output.shape)
-	# vit_decoder_model = build_symmetric_vit_decoder(vit_model, num_patches_h=16, num_patches_w=16, patch_h=64, patch_w=64).to("cuda")
-	# decoded_image = vit_decoder_model(output)
-	# print(decoded_image.shape)
-
-	ae_vit = AutoencoderViT_B_64().to("cuda")
-	random_input = torch.randn(22,1,1024,1024).to("cuda")
-	decoded = ae_vit(random_input)
-	print(decoded.shape)
+    ae_vit = AE_ViT(
+        contrastive_dim=512,
+        ddconfig={
+            "input_dim": 1,
+            "input_resolution": 1024,
+            "patch_size": 64,
+            "hidden_dim": 768,
+            "layers": 6,
+            "heads": 8,
+        },
+    ).to("cuda")
+    x = torch.randn(22, 1, 1024, 1024).to("cuda")
+    z = ae_vit.encode(x)
+    print(z.shape)
+    contra = ae_vit.contrastive_projection(z)
+    print(contra.shape)
+    rec = ae_vit.decode(z)
+    print(rec.shape)
+        

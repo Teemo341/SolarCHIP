@@ -30,7 +30,7 @@ data:
       target: data.dataset.SolarDataset.multimodal_dataset
       params:
         modal_list: 
-          - 'magnet'
+          - 'hmi'
           - '0094'
         load_imgs: false
         enhance_list:
@@ -45,7 +45,7 @@ data:
       target: data.dataset.SolarDataset.multimodal_dataset
       params:
         modal_list: 
-          - 'magnet'
+          - 'hmi'
           - '0094'
         load_imgs: false
         enhance_list:
