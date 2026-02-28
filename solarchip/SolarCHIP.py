@@ -11,41 +11,45 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .utils.util import instantiate_from_config
+from .modules.losses import LPIPS, Contrastive
 
 
 class solarchip_base(pl.LightningModule):
     """
     A wrapper class for multiple models to be used in a single training loop.
     """
-    def __init__(self, modal_list, save_memory=False, ckpt_path=None, ignore_keys=list()):
+    def __init__(self, modal_list, base_model, loss_config=None, save_memory=False, ckpt_path=None, ignore_keys=list()):
         super().__init__()
         self.id_to_modal = modal_list
+        self.modal_to_id = {modal: i for i, modal in enumerate(modal_list)}
         self.save_memory = save_memory # whether to save memory by not optimizing all models at the same time
 
-        assert self.data_id_to_modal == self.config.data.params.validation.params.modal_list # train and val modal list should be the same
-        assert len(self.data_id_to_modal) == len(self.models), "train and val modal list should be the same as the model list"
-        self.data_modal_to_id = { modal: i for i, modal in enumerate(self.data_id_to_modal) }
-
-        self.automatic_optimization = False # to use manual optimization
-        self.get_models()
+        self.get_models(base_model)
+        self.get_loss(loss_config)
 
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
 
     # funcitons for initialization
-    def get_models(self):
+    def get_models(self, base_model_config):
         """
         Instantiate the models specified in the config.
         """
-        self.models = nn.ModuleDict()
-        self.modal_to_id = {}
-        self.id_to_modal = {}
-        for i, (modal_name, model_config) in enumerate(self.config.model.items()):
-            self.modal_to_id[modal_name] = i
-            self.id_to_modal[i] = modal_name
-            model = instantiate_from_config(model_config)
-            self.models[modal_name] = model
-            print(f"Model {modal_name} loaded from {model_config.params.ckpt_path}")
+        assert self.id_to_modal[0] == 'hmi', "The first modal must be hmi for the current implementation."
+        self.model_dict = nn.ModuleDict()
+        for modal in self.id_to_modal:
+            model = instantiate_from_config(base_model_config)
+            self.model_dict[modal] = model
+
+    def get_loss(self, loss_config):
+        self.loss_config = loss_config
+        if loss_config is not None:
+            self.rec_loss_fn = LPIPS(**loss_config)
+            self.contrastive_loss_fn = Contrastive()
+            self.cls_ctr_weight = loss_config['cls_contrastive_weight']
+            self.pat_ctr_weight = loss_config['pat_contrastive_weight']
+            self.int_ctr_weight = loss_config['int_contrastive_weight']
+        
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
@@ -55,29 +59,40 @@ class solarchip_base(pl.LightningModule):
                 if k.startswith(ik):
                     print("Deleting key {} from state_dict.".format(k))
                     del sd[k]
+        if self.loss_config is None: # if no loss config is provided,delete possible loss parameters from the state dict to avoid loading error
+            if 'rec_loss_fn' in sd:
+                del sd['rec_loss_fn']
+            if 'contrastive_loss_fn' in sd:
+                del sd['contrastive_loss_fn']
         self.load_state_dict(sd, strict=False)
         print(f"Restored from {path}")
 
     def configure_optimizers(self):
-        optimizers = []
-        schedulers = []
-        for i in range(len(self.models)):
-            modal_name = self.id_to_modal[i]
-            if getattr(self.config.model, modal_name).base_learning_optimizer == 'Adam':
-                optimizer = torch.optim.Adam(self.models[modal_name].parameters(), lr = getattr(self.config.model, modal_name).base_learning_rate)
-            elif getattr(self.config.model, modal_name).base_learning_optimizer == 'AdamW':
-                optimizer = torch.optim.AdamW(self.models[modal_name].parameters(), lr = getattr(self.config.model, modal_name).base_learning_rate)
-            else:
-                raise ValueError(f'Optimizer {getattr(self.config.model, modal_name).base_learning_optimizer} is not supported')
-            optimizers.append(optimizer)
+        assert self.model_dict is not None, "Models must be initialized before configuring optimizer."
+        if self.loss_config is None:
+            return # no optimizer if no loss config is provided since there is no training objective
+        
+        param_list = []
+        for _, model in self.model_dict.items():
+            param_list.append(model.parameters())
+        if self.loss_config is not None:
+            param_list.append(self.rec_loss_fn.parameters())
+            param_list.append(self.contrastive_loss_fn.parameters())
+        if self.loss_config["optimizer"] == 'Adam':
+            optimizer = torch.optim.Adam(param_list, lr = self.loss_config["lr"])
+        elif self.loss_config[optimizer] == 'AdamW':
+            optimizer = torch.optim.AdamW(param_list, lr = self.loss_config["lr"])
+        else:
+            raise ValueError(f'Optimizer {self.loss_config["optimizer"]} is not supported')
 
-            if getattr(self.config.model, modal_name).base_learning_schedule == 'CosineAnnealingLR':
-                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=self.config.training.epochs)
-            else:
-                raise ValueError(f'Scheduler {getattr(self.config.model, modal_name).base_learning_schedule} is not supported')
-            schedulers.append(scheduler)
-        return optimizers, schedulers
+        if self.loss_config["scheduler"] == 'CosineAnnealingLR':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.loss_config["epochs"])
+        elif self.loss_config["scheduler"] == None:
+            scheduler = None
+        else:
+            raise ValueError(f'Scheduler {self.loss_config["scheduler"]} is not supported')
+        
+        return {'optimizer': optimizer, 'lr_scheduler': scheduler}
     
     # functions for training
     def training_step(self, batch, batch_idx):
@@ -128,17 +143,6 @@ class solarchip_base(pl.LightningModule):
             for optimizer in optimizers:
                 optimizer.zero_grad()
             self.manual_backward(loss)
-            # check gradients
-            # if self.global_rank == 0:
-            #     for name, model in self.models.items():
-            #         print(f"Model {name} parameters:")
-            #         for param_name, param in model.class_block.named_parameters():
-            #             print(f"Parameter name: {param_name}")
-            #             if param.grad is not None:
-            #                 print("Gradient:", param.grad)
-            #             else:
-            #                 print("Gradient: None")
-            #         break     
             for optimizer in optimizers:
                 optimizer.step()
 
