@@ -114,7 +114,7 @@ class AE_ViT(pl.LightningModule):
     def forward(self, input):
         z = self.encode(input)
         dec = self.decode(z)
-        return dec
+        return dec, z
 
 
 if __name__ == "__main__":

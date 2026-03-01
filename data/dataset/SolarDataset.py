@@ -162,17 +162,19 @@ class multimodal_dataset(Dataset):
                 image_list.append(img)
             image = image_preprocess(image_list, image_size = self.enhance_list[0], p_flip = self.enhance_list[1], p_rotate = self.enhance_list[2])
             image = enhance_funciton(image, enhance_type = 'log1p', rescale_value = 1, log1p_scale=self.log1p_scale)
-            return image # torch.Size([modal_num, channel_num, image_size, image_size])
+            # return image # torch.Size([modal_num, channel_num, image_size, image_size])
+            image_dict = {}
+            for i in range(len(self.dataset)):
+                image_dict[self.modal_list[i]] = image[i]
+            return image_dict # dict of images, key is modal name, value is image tensor with shape [channel_num, image_size, image_size]
+
 
 if __name__ == '__main__':
 
     dataset = multimodal_dataset(modal_list=['hmi','0094'], load_imgs=True, enhance_list=[224,0.5,90],time_interval=[0,7452000],time_step=60)
-    # print(len(dataset))
-    # start_date = transfer_date_to_id(2010, 5, 1)
-    # end_date = transfer_date_to_id(2020, 6, 30)
-    # time_interval = [start_date, end_date]
-
-    # start_date = transfer_date_to_id(2020, 6, 30)
-    # end_date = transfer_date_to_id(2024, 6, 30)
-    # time_interval = [start_date, end_date]
-    # dataset = multimodal_dataset(modal_list, load_imgs, enhance_list, time_interval,time_step)
+    from torch.utils.data import DataLoader
+    dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
+    for batch in dataloader:
+        print(batch.shape)
+        break
+    

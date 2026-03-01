@@ -24,7 +24,7 @@ class LPIPS(nn.Module):
             self.perceptual_loss = lpips.LPIPS(net='vgg').eval()
 
         
-    def forward(self, inputs, recons, posteriors, weights=None):
+    def forward(self, inputs, recons, posteriors=None, weights=None):
 
         if self.rec_loss_type == 'l1':
             rec_loss = torch.abs(inputs.contiguous() - recons.contiguous())
@@ -47,6 +47,8 @@ class LPIPS(nn.Module):
 
         if isinstance(posteriors, None):
             kl_loss = torch.tensor(0.0)
+        elif isinstance(posteriors, torch.Tensor): # just z sampled from standard Gaussian, no KL loss
+            kl_loss = torch.tensor(0.0)
         elif isinstance(posteriors, tuple):
             post_mu, post_logvar = posteriors
             kl_loss = -0.5 * torch.sum(1 + post_logvar - post_mu.pow(2) - post_logvar.exp())
@@ -60,7 +62,6 @@ class LPIPS(nn.Module):
         loss = weighted_nll_loss + self.kl_weight * kl_loss
 
         loss_dict = {
-            "total_loss": loss.item(),
             "rec_loss": rec_loss.mean().item(),
             "nll_loss": nll_loss.item(),
             "kl_loss": kl_loss.item(),

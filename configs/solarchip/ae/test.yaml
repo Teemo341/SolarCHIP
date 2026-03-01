@@ -30,8 +30,11 @@ model:
       optimizer: "AdamW"
       scheduler: "CosineAnnealingLR"
       rec_loss_type: l2
-      kl_weight: 0.000001
+      kl_weight: 0.1
       perceptual_weight: 0.0
+      cls_contrastive_weight: 1.0
+      pat_contrastive_weight: 1.0
+      int_contrastive_weight: 1.0
 
 data:
   target: data.build.DataModuleFromConfig

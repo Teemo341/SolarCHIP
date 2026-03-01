@@ -24,14 +24,15 @@ class solarchip_base(pl.LightningModule):
         self.modal_to_id = {modal: i for i, modal in enumerate(modal_list)}
         self.save_memory = save_memory # whether to save memory by not optimizing all models at the same time
 
-        self.get_models(base_model)
-        self.get_loss(loss_config)
+        self.init_models(base_model)
+        self.init_loss(loss_config)
+        self.automatic_optimization = False # use manual optimization to control the optimization of each model for memory saving
 
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
 
     # funcitons for initialization
-    def get_models(self, base_model_config):
+    def init_models(self, base_model_config):
         """
         Instantiate the models specified in the config.
         """
@@ -41,7 +42,10 @@ class solarchip_base(pl.LightningModule):
             model = instantiate_from_config(base_model_config)
             self.model_dict[modal] = model
 
-    def get_loss(self, loss_config):
+    def get_model(self, modal):
+        return self.model_dict[modal]
+
+    def init_loss(self, loss_config):
         self.loss_config = loss_config
         if loss_config is not None:
             self.rec_loss_fn = LPIPS(**loss_config)
@@ -94,11 +98,153 @@ class solarchip_base(pl.LightningModule):
         
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
     
+    def forward_save_memory(self, batch, optimize=True):
+        loss_dict = {}
+
+        # first optimize hmi
+        hmi = batch['hmi'].to(self.device)
+        rec_hmi, z_hmi = self.model_dict['hmi'](hmi)
+        rec_loss, loss_dict_tmp = self.rec_loss_fn(hmi, rec_hmi, posteriors=z_hmi)
+        for k, v in loss_dict_tmp.items():
+            loss_dict[f"hmi/{k}"] = v
+        cls_ctr_loss, pat_ctr_loss, int_ctr_loss = 0, 0, 0
+        for i in range(1, len(self.id_to_modal)):
+            modal = self.id_to_modal[i]
+            aia = batch[modal].to(self.device)
+            with torch.no_grad():
+                rec_aia, z_aia = self.get_model(modal)(aia)
+            cls_ctr_loss_tmp = self.contrastive_loss_fn.cls_contrastive_loss(z_hmi, z_aia) if self.cls_ctr_weight > 0 else 0
+            pat_ctr_loss_tmp = self.contrastive_loss_fn.pat_contrastive_loss(z_hmi, z_aia) if self.pat_ctr_weight > 0 else 0
+            int_ctr_loss_tmp = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia) if self.int_ctr_weight > 0 else 0
+            cls_ctr_loss += cls_ctr_loss_tmp
+            pat_ctr_loss += pat_ctr_loss_tmp
+            int_ctr_loss += int_ctr_loss_tmp
+            loss_dict[f"cls_ctr_loss/hmi_{modal}"] = cls_ctr_loss_tmp.item() if self.cls_ctr_weight > 0 else 0
+            loss_dict[f"pat_ctr_loss/hmi_{modal}"] = pat_ctr_loss_tmp.item() if self.pat_ctr_weight > 0 else 0
+            loss_dict[f"int_ctr_loss/hmi_{modal}"] = int_ctr_loss_tmp.item() if self.int_ctr_weight > 0 else 0
+        cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1) if self.cls_ctr_weight > 0 else 0
+        pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1) if self.pat_ctr_weight > 0 else 0
+        int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1) if self.int_ctr_weight > 0 else 0
+        total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
+        loss_dict['hmi/total_loss'] = total_loss.item()
+        if optimize:
+            optimizer = self.optimizers()
+            self.manual_backward(total_loss)
+            optimizer.step()
+        optimizer.zero_grad(set_to_none=True) # remove the computational graph for hmi to save memory
+        # remove the computational graph for hmi to save memory
+        del rec_hmi, rec_loss, cls_ctr_loss, pat_ctr_loss, int_ctr_loss, total_loss
+        z_hmi = z_hmi.detach() # detach z_hmi to save memory
+        z_hmi.requires_grad = False
+
+        # then optimize other modals one by one
+        for i in range(1, len(self.id_to_modal)):
+            modal = self.id_to_modal[i]
+            aia = batch[modal].to(self.device)
+            rec_aia, z_aia = self.get_model(modal)(aia)
+            rec_loss, loss_dict_tmp = self.rec_loss_fn(aia, rec_aia, posteriors=z_aia)
+            for k, v in loss_dict_tmp.items():
+                loss_dict[f"{modal}/{k}"] = v
+            cls_ctr_loss, pat_ctr_loss, int_ctr_loss = 0, 0, 0
+            if self.cls_ctr_weight > 0:
+                cls_ctr_loss = self.contrastive_loss_fn.cls_contrastive_loss(z_hmi, z_aia)
+                loss_dict[f"cls_ctr_loss/hmi_{modal}"] = (cls_ctr_loss.item()+loss_dict[f"cls_ctr_loss/hmi_{modal}"]) / 2 # average contrastive loss between hmi and the modal
+            if self.pat_ctr_weight > 0:
+                pat_ctr_loss = self.contrastive_loss_fn.pat_contrastive_loss(z_hmi, z_aia)
+                loss_dict[f"pat_ctr_loss/hmi_{modal}"] = (pat_ctr_loss.item()+loss_dict[f"pat_ctr_loss/hmi_{modal}"]) / 2
+            if self.int_ctr_weight > 0:
+                int_ctr_loss = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia)
+                loss_dict[f"int_ctr_loss/hmi_{modal}"] = (int_ctr_loss.item()+loss_dict[f"int_ctr_loss/hmi_{modal}"]) / 2
+            total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
+            loss_dict[f'{modal}/total_loss'] = total_loss.item()
+            if optimize:
+                optimizer = self.optimizers()
+                self.manual_backward(total_loss)
+                optimizer.step()
+            optimizer.zero_grad(set_to_none=True) # remove the computational graph for the modal to save memory
+            # remove the computational graph for the modal to save memory
+            del rec_aia, rec_loss, cls_ctr_loss, pat_ctr_loss, int_ctr_loss, total_loss
+            del z_aia
+
+        return loss_dict
+    
+    def forward_full_memory(self, batch, optimize=True):
+        # optimize all models together
+        loss_dict = {}
+        hmi = batch['hmi'].to(self.device)
+        rec_hmi, z_hmi = self.model_dict['hmi'](hmi)
+        total_loss, loss_dict_tmp = self.rec_loss_fn(hmi, rec_hmi, posteriors=z_hmi)
+        for k, v in loss_dict_tmp.items():
+            loss_dict[f"hmi/{k}"] = v
+        loss_dict['hmi/total_loss'] = total_loss.item()
+        cls_ctr_loss, pat_ctr_loss, int_ctr_loss = 0, 0, 0
+        for i in range(1, len(self.id_to_modal)):
+            modal = self.id_to_modal[i]
+            aia = batch[modal].to(self.device)
+            rec_aia, z_aia = self.get_model(modal)(aia)
+            if self.cls_ctr_weight>0:
+                
+            cls_ctr_loss_tmp = self.contrastive_loss_fn.cls_contrastive_loss(z_hmi, z_aia) if self.cls_ctr_weight > 0 else 0
+            pat_ctr_loss_tmp = self.contrastive_loss_fn.pat_contrastive_loss(z_hmi, z_aia) if self.pat_ctr_weight > 0 else 0
+            int_ctr_loss_tmp = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia) if self.int_ctr_weight > 0 else 0
+            cls_ctr_loss += cls_ctr_loss_tmp
+            pat_ctr_loss += pat_ctr_loss_tmp
+            int_ctr_loss += int_ctr_loss_tmp
+            loss_dict[f"cls_ctr_loss/hmi_{modal}"] = cls_ctr_loss_tmp.item() if self.cls_ctr_weight > 0 else 0
+            loss_dict[f"pat_ctr_loss/hmi_{modal}"] = pat_ctr_loss_tmp.item() if self.pat_ctr_weight > 0 else 0
+            loss_dict[f"int_ctr_loss/hmi_{modal}"] = int_ctr_loss_tmp.item() if self.int_ctr_weight > 0 else 0
+        cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1) if self.cls_ctr_weight > 0 else 0
+        pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1) if self.pat_ctr_weight > 0 else 0
+        int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1) if self.int_ctr_weight > 0 else 0
+        total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
+        loss_dict['hmi/total_loss'] = total_loss.item()
+        if optimize:
+            optimizer = self.optimizers()
+            self.manual_backward(total_loss)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True) # remove the computational graph for hmi to save memory
+        # remove the computational graph for hmi to save memory
+        del rec_hmi, rec_loss, cls_ctr_loss, pat_ctr_loss, int_ctr_loss, total_loss
+        z_hmi = z_hmi.detach() # detach z_hmi to save memory
+        z_hmi.requires_grad = False
+
+        # then optimize other modals one by one
+        for i in range(1, len(self.id_to_modal)):
+            modal = self.id_to_modal[i]
+            aia = batch[modal].to(self.device)
+            rec_aia, z_aia = self.get_model(modal)(aia)
+            rec_loss, loss_dict_tmp = self.rec_loss_fn(aia, rec_aia, posteriors=z_aia)
+            for k, v in loss_dict_tmp.items():
+                loss_dict[f"{modal}/{k}"] = v
+            cls_ctr_loss, pat_ctr_loss, int_ctr_loss = 0, 0, 0
+            if self.cls_ctr_weight > 0:
+                cls_ctr_loss = self.contrastive_loss_fn.cls_contrastive_loss(z_hmi, z_aia)
+                loss_dict[f"cls_ctr_loss/hmi_{modal}"] = (cls_ctr_loss.item()+loss_dict[f"cls_ctr_loss/hmi_{modal}"]) / 2 # average contrastive loss between hmi and the modal
+            if self.pat_ctr_weight > 0:
+                pat_ctr_loss = self.contrastive_loss_fn.pat_contrastive_loss(z_hmi, z_aia)
+                loss_dict[f"pat_ctr_loss/hmi_{modal}"] = (pat_ctr_loss.item()+loss_dict[f"pat_ctr_loss/hmi_{modal}"]) / 2
+            if self.int_ctr_weight > 0:
+                int_ctr_loss = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia)
+                loss_dict[f"int_ctr_loss/hmi_{modal}"] = (int_ctr_loss.item()+loss_dict[f"int_ctr_loss/hmi_{modal}"]) / 2
+            total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
+            loss_dict[f'{modal}/total_loss'] = total_loss.item()
+            if optimize:
+                optimizer = self.optimizers()
+                self.manual_backward(total_loss)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True) # remove the computational graph for the modal to save memory
+            # remove the computational graph for the modal to save memory
+            del rec_aia, rec_loss, cls_ctr_loss, pat_ctr_loss, int_ctr_loss, total_loss
+            del z_aia
+
+            return loss_dict
+
+            
+
+
+
     # functions for training
     def training_step(self, batch, batch_idx):
-        current_epoch = self.current_epoch
-        contrast_weight = self.config.training.contrast_weight_min + (self.config.training.contrast_weight_max - self.config.training.contrast_weight_min) * math.sin(math.pi/2 * current_epoch / self.config.training.epochs) # increase contrast weight from min to max
-        label = torch.arange(batch.shape[0]).to(batch.device)  # (b,) label for contrastive loss
 
         if self.full_model_train:
             rec_loss_ = {}
