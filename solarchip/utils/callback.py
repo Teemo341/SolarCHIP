@@ -176,56 +176,20 @@ class SolarImageLogger(Callback):
         self.log_images_kwargs = log_images_kwargs if log_images_kwargs else {}
         self.log_first_step = log_first_step
 
-    def get_cmap_and_limits(self, inputs, mode):
-        cmap = "RdBu_r" if mode == 'hmi_image_vae' or mode == 'hmi_image_cliptoken' or mode == 'latent' or mode == 'hmi_image' else "Reds"
+    def get_cmap_and_limits(self, inputs):
         vmin = np.min(inputs)
         vmax = np.max(inputs)
-        # print('mode',mode)
-        # print('inputs',inputs.shape)
-        mode_list_1 = ['hmi_image_vae','hmi_image_cliptoken','hmi_image','first_stage_key_mag','cond_key_mag','hmi']
-        mode_list_2 = ['0094_image','aia0094_image','aia0094_image_vae','aia0094_image_cliptoken_decodelrimage','aia0094_image_cliptoken','first_stage_key_img','cond_key_img','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']
-        if mode in mode_list_1:  # 'hmi_image_vae':
+        if vmin <0: # hmi
+            cmap = "RdBu_r"
             vmax = np.max([np.abs(vmin), np.abs(vmax)]) / 2
             vmin = -vmax
-        elif mode in mode_list_2:  # '0094_image'
-            # vmax = np.max([np.abs(vmin), np.abs(vmax)]) / 2
-            vmax = np.max([np.abs(vmin), np.abs(vmax)]) / 1
+        else: # usually positive, like aia
+            cmap = "Reds"
             vmin = 0
-        elif mode == None or mode == "latent":
-            pass
-        else:
-            raise ValueError("Unknown modal type")
         return cmap, vmin, vmax
-
-    def get_target_keys(self, pl_module):
-        if pl_module.__class__.__name__ in ["SolarLatentDiffusion", "LatentDiffusion", "LDMWrapper"]:
-            target_keys = ['inputs', 'inputs_latent', 'reconstruction', 'conditioning', 'conditioning_latent', 'samples', 'samples_latent', 'diffusion_row', 'denoise_row']
-
-        elif pl_module.__class__.__name__ in ["CNN_VAE", "aia0094_CNN_VAE",'CNN_VAE_two']:
-            target_keys = ['inputs', 'recon', 'mu', 'samples']
-
-        elif pl_module.__class__.__name__ in ["VQModel"]:
-            target_keys = ["inputs", 'recon', 'latent_prequant', 'latent_quant']
-
-        elif pl_module.__class__.__name__ in ["VQVAE2Model"]:
-            target_keys = ["original_inputs", "quantized_first_vq", 
-                           'prequant_second_vq', "quantized_second_vq", "reconstructed_second_vq", 
-                           "reconstructed_to_first_vq", "reconstructed_to_original"]
-            
-        elif pl_module.__class__.__name__ in ["VQVAE2",'VQVAE2_1']:
-            target_keys = ["inputs", "recon"]
-        
-        elif pl_module.__class__.__name__ in ["ClipVitDecoder", "SolarLatentGPT", "vit_regressor", "SolarCLIPDAE"]:
-            target_keys = ['inputs', 'targets', 'targets_hat']
-
-        elif pl_module.__class__.__name__ in ["ViTMAE"]:
-            target_keys = ['inputs', 'targets', 'targets_hat_mask_ratio_set', 'targets_hat_mask_ratio_0', 'targets_hat_inference']
-        else:
-            raise ValueError("Unsupported model type")
-        return target_keys
     
     @rank_zero_only
-    def _log_images(self, pl_module, images, modals, batch_idx, split, save_dir=None):
+    def _log_images(self, pl_module, images, batch_idx, split, save_dir=None):
         """
         Logs images either to TensorBoard or saves them locally based on the provided save_dir.
         If save_dir is provided, saves images locally. Otherwise, logs them to TensorBoard.
@@ -233,34 +197,27 @@ class SolarImageLogger(Callback):
         Args:
             pl_module: The Lightning module containing the logger.
             images (dict): Dictionary of image tensors.
-            modals (dict): Dictionary of modal types for each image key.
             batch_idx (int): Batch index for naming consistency.
             split (str): Split name (train/val/test).
             save_dir (str): Directory to save images locally. If None, logs to TensorBoard.
         """
-        target_keys = self.get_target_keys(pl_module)
 
         for k, img_tensor in images.items():
-            if k not in target_keys:
-                print(f"Warning: No modal type provided for {k}. Skipping.")
-                continue
-
             image_array = img_tensor.cpu().numpy()
-            modal = modals.get(k, None)
-            cmap, vmin, vmax = self.get_cmap_and_limits(image_array, modal)
+            cmap, vmin, vmax = self.get_cmap_and_limits(image_array)
             
             plt.figure(figsize=(32, 16))
             num_images = min(image_array.shape[0], 2)
             for i in range(num_images):
                 plt.subplot(1, 2, i+1)
-                if len(image_array.shape) == 4:
-                    if image_array.shape[1] < 3:
+                if len(image_array.shape) == 4: # (b, c, h, w)
+                    if image_array.shape[1] < 3: # single channel, input or reconstructed image
                         plt.imshow(image_array[i, 0, :, :], cmap=cmap, vmin=vmin, vmax=vmax)
                     else:
-                        if image_array.shape[1] >3:
+                        if image_array.shape[1] >3: # ususally latent
                             image_array = image_array[i, :3, :, :]
                         image_array = (image_array.transpose(1, 2, 0)- image_array.min()) / (image_array.max() - image_array.min())
-                        plt.imshow(image_array, vmin=vmin, vmax=vmax)
+                        plt.imshow(image_array)
                 elif len(image_array.shape) == 3:
                     if image_array.shape[0] < 3:
                         plt.imshow(image_array[i, :, :], cmap=cmap, vmin=vmin, vmax=vmax)
@@ -268,7 +225,7 @@ class SolarImageLogger(Callback):
                         if image_array.shape[0] > 3:
                             image_array = image_array[:3, :, :]
                         image_array = (image_array.transpose(1, 2, 0) - image_array.min()) / (image_array.max() - image_array.min())
-                        plt.imshow(image_array, vmin=vmin, vmax=vmax)
+                        plt.imshow(image_array)
                 plt.title(f"{k} - Image {i}")
                 plt.subplots_adjust(wspace=0, hspace=0)
 
@@ -296,12 +253,12 @@ class SolarImageLogger(Callback):
             plt.close()
         
     @rank_zero_only
-    def _log_images_tensorboard(self, pl_module, images, modals, batch_idx, split):
-        self._log_images(pl_module, images, modals, batch_idx, split, save_dir=False)
+    def _log_images_tensorboard(self, pl_module, images, batch_idx, split):
+        self._log_images(pl_module, images, batch_idx, split, save_dir=False)
 
     @rank_zero_only
-    def log_local(self, save_dir, split, images, modals, batch_idx, pl_module):
-        self._log_images(pl_module, images, modals, batch_idx, split, save_dir=save_dir)
+    def log_local(self, save_dir, split, images, batch_idx, pl_module):
+        self._log_images(pl_module, images, batch_idx, split, save_dir=save_dir)
 
     def log_img(self, pl_module, batch, batch_idx, split="train"):
         # print('begin log_img')
@@ -321,7 +278,7 @@ class SolarImageLogger(Callback):
                 pl_module.eval()
 
             with torch.no_grad():
-                images, modals = pl_module.log_images(batch, **self.log_images_kwargs)
+                images = pl_module.log_images(batch, **self.log_images_kwargs)
 
             for k in images:
                 N = min(images[k].shape[0], self.max_images)
@@ -331,11 +288,10 @@ class SolarImageLogger(Callback):
                     if self.clamp:
                         images[k] = torch.clamp(images[k], -1., 1.)
 
-            self.log_local(pl_module.logger.save_dir, split, images, modals,
-                        batch_idx, pl_module)
+            self.log_local(pl_module.logger.save_dir, split, images, batch_idx, pl_module)
 
             logger_log_images = self.logger_log_images.get(logger, lambda *args, **kwargs: None)
-            logger_log_images(pl_module, images, modals, pl_module.global_step, split)
+            logger_log_images(pl_module, images, pl_module.global_step, split)
 
             if is_train:
                 pl_module.train()

@@ -6,6 +6,42 @@ from packaging import version
 
 import pytorch_lightning as pl
 import torch
+import numpy as np
+import matplotlib.pyplot as plt
+
+def solar_painting(image_array, modal, title = None):
+    assert len(image_array.shape) == 4 # (b, c, h, w)
+    if modal == "hmi":
+        cmap = "RdBu_r"
+        vmax = np.max(np.abs(image_array))
+        vmin = -vmax
+    else:
+        cmap = "Reds"
+        vmin = 0
+        vmax = np.max(image_array)
+    num_images = min(image_array.shape[0], 4)
+    fig = plt.figure(figsize=(num_images*16, 16))
+    for i in range(num_images):
+        plt.subplot(1, num_images, i+1)
+        plt.imshow(image_array[i, 0, :, :], cmap=cmap, vmin=vmin, vmax=vmax)
+        plt.title(title)
+        plt.subplots_adjust(wspace=0, hspace=0)
+    return fig
+
+def latent_painting(image_array, modal, title = None):
+    assert len(image_array.shape) == 4 # (b, c, h, w)
+    num_images = min(image_array.shape[0], 4)
+    fig = plt.figure(figsize=(num_images*16, 16))
+    c = image_array.shape[1]
+    visual_channels = np.random.choice(c, 3, replace=(c < 3))
+    image_array = image_array[:, visual_channels, :, :]
+    image_array = (image_array - image_array.min()) / (image_array.max() - image_array.min())
+    for i in range(num_images):
+        plt.subplot(1, num_images, i+1)
+        plt.imshow(image_array[i,: :, :].transpose(1, 2, 0))
+        plt.title(title)
+        plt.subplots_adjust(wspace=0, hspace=0)
+    return fig
 
 def instantiate_from_config(config):
     if not "target" in config:

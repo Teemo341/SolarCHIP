@@ -257,6 +257,14 @@ class solarchip_base(pl.LightningModule):
         # log losses
         for k, v in loss_dict.items():
             self.log(f'test/{k}', v, logger=True, on_epoch=True, sync_dist=True)
+
+    def log_images(self, batch, batch_idx, mode='train'):
+        # log images for each modal
+        for i, modal in enumerate(self.id_to_modal):
+            img = batch[modal][0:4].cpu() # log the first 4 images in the batch
+            fig = solar_painting(img.numpy(), modal, title=f'{mode} step {self.global_step}')
+            self.logger.experiment.add_figure(f'{mode}/images/{modal}', fig, global_step=self.global_step)
+            plt.close(fig)
          
 
 def solar_painting(image_array, modal, title = None):

@@ -7,7 +7,7 @@ from pytorch_lightning.trainer import Trainer
 from pytorch_lightning import seed_everything
 from pytorch_lightning.loggers import WandbLogger
 
-from .utils.util import instantiate_from_config, TrainerSetup
+from solarchip.utils.util import instantiate_from_config, TrainerSetup
 
 
 def get_parser(**parser_kwargs):
