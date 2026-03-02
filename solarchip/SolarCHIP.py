@@ -113,18 +113,21 @@ class solarchip_base(pl.LightningModule):
             aia = batch[modal].to(self.device)
             with torch.no_grad():
                 rec_aia, z_aia = self.get_model(modal)(aia)
-            cls_ctr_loss_tmp = self.contrastive_loss_fn.cls_contrastive_loss(z_hmi, z_aia) if self.cls_ctr_weight > 0 else 0
-            pat_ctr_loss_tmp = self.contrastive_loss_fn.pat_contrastive_loss(z_hmi, z_aia) if self.pat_ctr_weight > 0 else 0
-            int_ctr_loss_tmp = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia) if self.int_ctr_weight > 0 else 0
-            cls_ctr_loss += cls_ctr_loss_tmp
-            pat_ctr_loss += pat_ctr_loss_tmp
-            int_ctr_loss += int_ctr_loss_tmp
-            loss_dict[f"cls_ctr_loss/hmi_{modal}"] = cls_ctr_loss_tmp.item() if self.cls_ctr_weight > 0 else 0
-            loss_dict[f"pat_ctr_loss/hmi_{modal}"] = pat_ctr_loss_tmp.item() if self.pat_ctr_weight > 0 else 0
-            loss_dict[f"int_ctr_loss/hmi_{modal}"] = int_ctr_loss_tmp.item() if self.int_ctr_weight > 0 else 0
-        cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1) if self.cls_ctr_weight > 0 else 0
-        pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1) if self.pat_ctr_weight > 0 else 0
-        int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1) if self.int_ctr_weight > 0 else 0
+            if self.cls_ctr_weight >0:
+                cls_ctr_loss_tmp = self.contrastive_loss_fn.cls_contrastive_loss(z_hmi, z_aia)
+                loss_dict[f"cls_ctr_loss/hmi_{modal}"] = cls_ctr_loss_tmp.item()
+                cls_ctr_loss += cls_ctr_loss_tmp
+            if self.pat_ctr_weight > 0:
+                pat_ctr_loss_tmp = self.contrastive_loss_fn.pat_contrastive_loss(z_hmi, z_aia)
+                loss_dict[f"pat_ctr_loss/hmi_{modal}"] = pat_ctr_loss_tmp.item()
+                pat_ctr_loss += pat_ctr_loss_tmp
+            if self.int_ctr_weight > 0:
+                    int_ctr_loss_tmp = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia)
+                    loss_dict[f"int_ctr_loss/hmi_{modal}"] = int_ctr_loss_tmp.item()
+                    int_ctr_loss += int_ctr_loss_tmp
+        cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1)
+        pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1)
+        int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1)
         total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
         loss_dict['hmi/total_loss'] = total_loss.item()
         if optimize:
@@ -171,249 +174,89 @@ class solarchip_base(pl.LightningModule):
     def forward_full_memory(self, batch, optimize=True):
         # optimize all models together
         loss_dict = {}
+        total_loss = 0
         hmi = batch['hmi'].to(self.device)
         rec_hmi, z_hmi = self.model_dict['hmi'](hmi)
-        total_loss, loss_dict_tmp = self.rec_loss_fn(hmi, rec_hmi, posteriors=z_hmi)
+        rec_loss_tmp, loss_dict_tmp = self.rec_loss_fn(hmi, rec_hmi, posteriors=z_hmi)
         for k, v in loss_dict_tmp.items():
             loss_dict[f"hmi/{k}"] = v
-        loss_dict['hmi/total_loss'] = total_loss.item()
-        cls_ctr_loss, pat_ctr_loss, int_ctr_loss = 0, 0, 0
+        loss_dict['hmi/total_loss'] = rec_loss_tmp.item()
+        total_loss += rec_loss_tmp
+
+        # calculate contrastive loss between hmi and other modals
         for i in range(1, len(self.id_to_modal)):
             modal = self.id_to_modal[i]
             aia = batch[modal].to(self.device)
             rec_aia, z_aia = self.get_model(modal)(aia)
+            rec_loss_tmp, loss_dict_tmp = self.rec_loss_fn(aia, rec_aia, posteriors=z_aia)
+            total_loss += rec_loss_tmp
+            for k, v in loss_dict_tmp.items():
+                loss_dict[f"{modal}/{k}"] = v
+            loss_dict[f'{modal}/total_loss'] = rec_loss_tmp.item()
             if self.cls_ctr_weight>0:
-                
-            cls_ctr_loss_tmp = self.contrastive_loss_fn.cls_contrastive_loss(z_hmi, z_aia) if self.cls_ctr_weight > 0 else 0
-            pat_ctr_loss_tmp = self.contrastive_loss_fn.pat_contrastive_loss(z_hmi, z_aia) if self.pat_ctr_weight > 0 else 0
-            int_ctr_loss_tmp = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia) if self.int_ctr_weight > 0 else 0
-            cls_ctr_loss += cls_ctr_loss_tmp
-            pat_ctr_loss += pat_ctr_loss_tmp
-            int_ctr_loss += int_ctr_loss_tmp
-            loss_dict[f"cls_ctr_loss/hmi_{modal}"] = cls_ctr_loss_tmp.item() if self.cls_ctr_weight > 0 else 0
-            loss_dict[f"pat_ctr_loss/hmi_{modal}"] = pat_ctr_loss_tmp.item() if self.pat_ctr_weight > 0 else 0
-            loss_dict[f"int_ctr_loss/hmi_{modal}"] = int_ctr_loss_tmp.item() if self.int_ctr_weight > 0 else 0
-        cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1) if self.cls_ctr_weight > 0 else 0
-        pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1) if self.pat_ctr_weight > 0 else 0
-        int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1) if self.int_ctr_weight > 0 else 0
-        total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
-        loss_dict['hmi/total_loss'] = total_loss.item()
+                cls_ctr_loss_tmp = self.contrastive_loss_fn.cls_contrastive_loss(z_hmi, z_aia)
+                loss_dict[f"cls_ctr_loss/hmi_{modal}"] = cls_ctr_loss_tmp.item()
+                cls_ctr_loss_tmp = cls_ctr_loss_tmp/ (len(self.id_to_modal)-1) * self.cls_ctr_weight
+                loss_dict['hmi/total_loss'] += cls_ctr_loss_tmp.item()
+                loss_dict[f'{modal}/total_loss'] += cls_ctr_loss_tmp.item()
+                total_loss += cls_ctr_loss_tmp
+            if self.pat_ctr_weight > 0:
+                pat_ctr_loss_tmp = self.contrastive_loss_fn.pat_contrastive_loss(z_hmi, z_aia)
+                loss_dict[f"pat_ctr_loss/hmi_{modal}"] = pat_ctr_loss_tmp.item()
+                pat_ctr_loss_tmp = pat_ctr_loss_tmp/ (len(self.id_to_modal)-1) * self.pat_ctr_weight
+                loss_dict['hmi/total_loss'] += pat_ctr_loss_tmp.item()
+                loss_dict[f'{modal}/total_loss'] += pat_ctr_loss_tmp.item()
+                total_loss += pat_ctr_loss_tmp
+            if self.int_ctr_weight > 0:
+                int_ctr_loss_tmp = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia)
+                loss_dict[f"int_ctr_loss/hmi_{modal}"] = int_ctr_loss_tmp.item()
+                int_ctr_loss_tmp = int_ctr_loss_tmp/ (len(self.id_to_modal)-1) * self.int_ctr_weight
+                loss_dict['hmi/total_loss'] += int_ctr_loss_tmp.item()
+                loss_dict[f'{modal}/total_loss'] += int_ctr_loss_tmp.item()
+                total_loss += int_ctr_loss_tmp
         if optimize:
             optimizer = self.optimizers()
             self.manual_backward(total_loss)
             optimizer.step()
-            optimizer.zero_grad(set_to_none=True) # remove the computational graph for hmi to save memory
-        # remove the computational graph for hmi to save memory
-        del rec_hmi, rec_loss, cls_ctr_loss, pat_ctr_loss, int_ctr_loss, total_loss
-        z_hmi = z_hmi.detach() # detach z_hmi to save memory
-        z_hmi.requires_grad = False
+            optimizer.zero_grad(set_to_none=True) # remove the computational graph to save memory
 
-        # then optimize other modals one by one
-        for i in range(1, len(self.id_to_modal)):
-            modal = self.id_to_modal[i]
-            aia = batch[modal].to(self.device)
-            rec_aia, z_aia = self.get_model(modal)(aia)
-            rec_loss, loss_dict_tmp = self.rec_loss_fn(aia, rec_aia, posteriors=z_aia)
-            for k, v in loss_dict_tmp.items():
-                loss_dict[f"{modal}/{k}"] = v
-            cls_ctr_loss, pat_ctr_loss, int_ctr_loss = 0, 0, 0
-            if self.cls_ctr_weight > 0:
-                cls_ctr_loss = self.contrastive_loss_fn.cls_contrastive_loss(z_hmi, z_aia)
-                loss_dict[f"cls_ctr_loss/hmi_{modal}"] = (cls_ctr_loss.item()+loss_dict[f"cls_ctr_loss/hmi_{modal}"]) / 2 # average contrastive loss between hmi and the modal
-            if self.pat_ctr_weight > 0:
-                pat_ctr_loss = self.contrastive_loss_fn.pat_contrastive_loss(z_hmi, z_aia)
-                loss_dict[f"pat_ctr_loss/hmi_{modal}"] = (pat_ctr_loss.item()+loss_dict[f"pat_ctr_loss/hmi_{modal}"]) / 2
-            if self.int_ctr_weight > 0:
-                int_ctr_loss = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia)
-                loss_dict[f"int_ctr_loss/hmi_{modal}"] = (int_ctr_loss.item()+loss_dict[f"int_ctr_loss/hmi_{modal}"]) / 2
-            total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
-            loss_dict[f'{modal}/total_loss'] = total_loss.item()
-            if optimize:
-                optimizer = self.optimizers()
-                self.manual_backward(total_loss)
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True) # remove the computational graph for the modal to save memory
-            # remove the computational graph for the modal to save memory
-            del rec_aia, rec_loss, cls_ctr_loss, pat_ctr_loss, int_ctr_loss, total_loss
-            del z_aia
-
-            return loss_dict
-
-            
-
-
+        return loss_dict
 
     # functions for training
     def training_step(self, batch, batch_idx):
-
-        if self.full_model_train:
-            rec_loss_ = {}
-            kld_loss_ = {}
-            logits_ = {}
-            contrast_loss_ = {}
-            for name, model in self.models.items():
-                # get rec_loss, kld_loss and logits for each model
-                model.train()
-                rec_loss, kld_loss, mu, _, _ = model.calculate_loss(batch[:, self.data_modal_to_id[name], :, :, :], return_moment=True)
-                rec_loss_[name] = rec_loss
-                kld_loss_[name] = kld_loss
-                logit = model.get_logit(mu)
-                # logit = model.class_block(mu)  # (b, c)
-                logit = logit/(logit.norm(dim=1, keepdim=True)+ 1e-32)  # (b, c)
-                logits_[name] = logit
-
-            if self.mean_logit:
-                mean_logit = torch.mean(torch.stack(list(logits_.values())), dim=0)  # (b, c)
-                mean_logit = mean_logit/(mean_logit.norm(dim=1, keepdim=True)+ 1e-32)  # (b, c)
-            
-            # calculate contrast loss
-            for name, model in self.models.items():
-                contrast_loss = 0
-                if self.mean_logit:
-                    cor_matrix = torch.matmul(logits_[name], mean_logit.T)
-                    contrast_loss = F.cross_entropy(cor_matrix, label)
-                    contrast_loss_[name] = contrast_loss
-                else:
-                    for name2, model2 in self.models.items():
-                        if name != name2:
-                            cor_matrix = torch.matmul(logits_[name], logits_[name2].T)
-                            contrast_loss += F.cross_entropy(cor_matrix, label)
-                    contrast_loss_[name] = contrast_loss/ (len(self.models)-1) # average contrast loss for each model
-
-            # optimize
-            rec_loss = sum(rec_loss_.values())
-            kld_loss = sum(kld_loss_.values())
-            contrast_loss = sum(contrast_loss_.values())
-            loss = contrast_weight * contrast_loss + self.config.training.reconstruct_weight * rec_loss + self.config.training.kl_weight * kld_loss
-            optimizers = self.optimizers()
-            for optimizer in optimizers:
-                optimizer.zero_grad()
-            self.manual_backward(loss)
-            for optimizer in optimizers:
-                optimizer.step()
-
-            # log
-            for name, model in self.models.items():
-                self.log(f"{name}/train/loss", loss, logger=True, on_epoch=True, sync_dist=True)
-                self.log(f"{name}/train/rec_loss/", rec_loss_[name], logger=True, on_epoch=True, sync_dist=True)
-                self.log(f"{name}/train/kld_loss", kld_loss_[name], logger=True, on_epoch=True, sync_dist=True)
-                self.log(f"{name}/train/contrast_loss", contrast_loss_[name], logger=True, on_epoch=True, sync_dist=True)
-                self.log(f"contrast_weight", contrast_weight, logger=True, on_epoch=True, sync_dist=True)
-                self.log(f'{name}/scheduler', self.lr_schedulers()[self.modal_to_id[name]].get_last_lr()[0], logger=True, on_epoch=True, sync_dist=True)
-            self.log(f"avg/train/loss", loss/len(self.models), logger=True, on_epoch=True, sync_dist=True)
-            self.log(f"avg/train/rec_loss", rec_loss/len(self.models), logger=True, on_epoch=True, sync_dist=True)
-            self.log(f"avg/train/kld_loss", kld_loss/len(self.models), logger=True, on_epoch=True, sync_dist=True)
-            self.log(f"avg/train/contrast_loss", contrast_loss/len(self.models), logger=True, on_epoch=True, sync_dist=True)
-
+        if self.save_memory:
+            loss_dict = self.forward_save_memory(batch, optimize=True)
         else:
-            training_id = random.randint(0, len(self.models) - 1)  # randomly select a model to train
-            training_modal = self.id_to_modal[training_id]  # get the training modal name
-            self.models[training_modal].train()  # set the selected model to train mode
+            loss_dict = self.forward_full_memory(batch, optimize=True)
 
-            # loss for the selected model
-            data_id = self.data_modal_to_id[training_modal]  # get the data id for the selected model
-            rec_loss, kld_loss, mu, _, _ = self.models[training_modal].calculate_loss(batch[:, data_id, :, :, :], return_moment=True)
-
-            # contrastive loss
-            contrast_loss = 0
-            logit = self.models[training_modal].get_logit(mu)  # (b, c)
-            logit = logit/(logit.norm(dim=1, keepdim=True)+ 1e-32)  # (b, c)
-            other_logits = {}
-            for i in range(len(self.models)):
-                if i != training_id:
-                    compare_modal = self.id_to_modal[i]  # get the compare modal name
-                    self.models[compare_modal].eval()  # set the other models to eval mode
-                    data_id = self.data_modal_to_id[compare_modal]  # get the data id for the other model
-                    with torch.no_grad():
-                        other_logit = self.models[compare_modal].get_logit(self.models[compare_modal].encode(batch[:, data_id, :, :, :])[0])  # (b, c)
-                        other_logit = other_logit/(other_logit.norm(dim=1, keepdim=True)+ 1e-32)  # (b, c)
-                        other_logits[compare_modal] = other_logit
-            if self.mean_logit:
-                other_logits[training_modal] = logit
-                mean_logit = torch.mean(torch.stack(list(other_logits.values())), dim=0)  # (b, c)
-                cor_matrix = torch.matmul(logits_[name], mean_logit.T)
-                contrast_loss = F.cross_entropy(cor_matrix, label)
-            else:
-                for other_logit in other_logits.values():
-                    cor_matrix = torch.matmul(logit, other_logit.T)  # (b, b)
-                    contrast_loss += F.cross_entropy(cor_matrix, label)
-                contrast_loss = contrast_loss / (len(self.models) - 1)  # average contrast loss for the selected model
-            loss = contrast_weight * contrast_loss + self.config.training.reconstruct_weight * rec_loss + self.config.training.kl_weight * kld_loss
-
-            # optimize
-            optimizers = self.optimizers()
-            optimizers[training_id].zero_grad()
-            self.manual_backward(loss)
-            optimizers[training_id].step()
-
-            # log
-            self.log(f"{training_modal}/train/loss", loss, logger=True, on_epoch=True, sync_dist=True)
-            self.log(f"{training_modal}/train/rec_loss", rec_loss, logger=True, on_epoch=True, sync_dist=True)
-            self.log(f"{training_modal}/train/kld_loss", kld_loss, logger=True, on_epoch=True, sync_dist=True)
-            self.log(f"{training_modal}/train/contrast_loss", contrast_loss, logger=True, on_epoch=True, sync_dist=True)
-            self.log(f"contrast_weight", contrast_weight, logger=True, on_epoch=True, sync_dist=True)
-            self.log(f'{training_modal}/scheduler', self.lr_schedulers()[training_id].get_last_lr()[0], logger=True, on_epoch=True, sync_dist=True)
+        # log losses
+        for k, v in loss_dict.items():
+            self.log(f'train/{k}', v, logger=True, on_epoch=True, sync_dist=True)
     
     def on_train_epoch_end(self):
         schedulers = self.lr_schedulers()
         if schedulers is not None:
-            for scheduler in schedulers:
-                scheduler.step()
+            schedulers.step()
 
     def validation_step(self, batch, batch_idx):
-        current_epoch = self.current_epoch
-        contrast_weight = self.config.training.contrast_weight_min + (self.config.training.contrast_weight_max - self.config.training.contrast_weight_min) * math.sin(math.pi/2 * current_epoch / self.config.training.epochs) # increase contrast weight from min to max
-        label = torch.arange(batch.shape[0]).to(batch.device)  # (b,) label for contrastive loss
+        if self.save_memory:
+            loss_dict = self.forward_save_memory(batch, optimize=False)
+        else:
+            loss_dict = self.forward_full_memory(batch, optimize=False)
 
-        with torch.no_grad():
-            rec_loss_ = {}
-            kld_loss_ = {}
-            logits_ = {}
-            contrast_loss_ = {}
-            for name, model in self.models.items():
-                # get rec_loss, kld_loss and logits for each model
-                model.train()
-                rec_loss, kld_loss, mu, _, _ = model.calculate_loss(batch[:, self.data_modal_to_id[name], :, :, :], return_moment=True)
-                rec_loss_[name] = rec_loss
-                kld_loss_[name] = kld_loss
-                logit = model.get_logit(mu)
-                logit = logit/(logit.norm(dim=1, keepdim=True)+ 1e-32)  # (b, c)
-                logits_[name] = logit
+        # log losses
+        for k, v in loss_dict.items():
+            self.log(f'val/{k}', v, logger=True, on_epoch=True, sync_dist=True)
 
-            if self.mean_logit:
-                mean_logit = torch.mean(torch.stack(list(logits_.values())), dim=0)  # (b, c)
-                mean_logit = mean_logit/(mean_logit.norm(dim=1, keepdim=True)+ 1e-32)  # (b, c)
-            
-            # calculate contrast loss
-            for name, model in self.models.items():
-                contrast_loss = 0
-                if self.mean_logit:
-                    cor_matrix = torch.matmul(logits_[name], mean_logit.T)
-                    contrast_loss = F.cross_entropy(cor_matrix, label)
-                    contrast_loss_[name] = contrast_loss
-                else:
-                    for name2, model2 in self.models.items():
-                        if name != name2:
-                            cor_matrix = torch.matmul(logits_[name], logits_[name2].T)
-                            contrast_loss += F.cross_entropy(cor_matrix, label)
-                    contrast_loss_[name] = contrast_loss/ (len(self.models)-1) # average contrast loss for each model
+    def test_step(self, batch, batch_idx):
+        if self.save_memory:
+            loss_dict = self.forward_save_memory(batch, optimize=False)
+        else:
+            loss_dict = self.forward_full_memory(batch, optimize=False)
 
-            # optimize
-            rec_loss = sum(rec_loss_.values())
-            kld_loss = sum(kld_loss_.values())
-            contrast_loss = sum(contrast_loss_.values())
-            loss = contrast_weight * contrast_loss + self.config.training.reconstruct_weight * rec_loss + self.config.training.kl_weight * kld_loss
-
-            # log
-            for name, model in self.models.items():
-                self.log(f"{name}/val/loss", loss, logger=True, on_epoch=True, sync_dist=True)
-                self.log(f"{name}/val/rec_loss/", rec_loss_[name], logger=True, on_epoch=True, sync_dist=True)
-                self.log(f"{name}/val/kld_loss", kld_loss_[name], logger=True, on_epoch=True, sync_dist=True)
-                self.log(f"{name}/val/contrast_loss", contrast_loss_[name], logger=True, on_epoch=True, sync_dist=True)
-            self.log(f"avg/val/loss", loss/len(self.models), logger=True, on_epoch=True, sync_dist=True)
-            self.log(f"avg/val/rec_loss", rec_loss/len(self.models), logger=True, on_epoch=True, sync_dist=True)
-            self.log(f"avg/val/kld_loss", kld_loss/len(self.models), logger=True, on_epoch=True, sync_dist=True)
-            self.log(f"avg/val/contrast_loss", contrast_loss/len(self.models), logger=True, on_epoch=True, sync_dist=True)
+        # log losses
+        for k, v in loss_dict.items():
+            self.log(f'test/{k}', v, logger=True, on_epoch=True, sync_dist=True)
          
 
 def solar_painting(image_array, modal, title = None):
