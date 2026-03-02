@@ -206,10 +206,10 @@ class SolarImageLogger(Callback):
             image_array = img_tensor.cpu().numpy()
             cmap, vmin, vmax = self.get_cmap_and_limits(image_array)
             
-            plt.figure(figsize=(32, 16))
-            num_images = min(image_array.shape[0], 2)
+            num_images = min(image_array.shape[0], self.max_images)
+            plt.figure(figsize=(16*num_images, 16))
             for i in range(num_images):
-                plt.subplot(1, 2, i+1)
+                plt.subplot(1, num_images, i+1)
                 if len(image_array.shape) == 4: # (b, c, h, w)
                     if image_array.shape[1] < 3: # single channel, input or reconstructed image
                         plt.imshow(image_array[i, 0, :, :], cmap=cmap, vmin=vmin, vmax=vmax)

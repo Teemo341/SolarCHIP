@@ -82,3 +82,15 @@ training:
   img_local: True
   full_model_train: True
   mean_logit: False
+
+lightning:
+  callbacks:
+    image_logger:
+      target: solarchip.utils.callback.SolarImageLogger
+      params:
+        batch_frequency: 1000
+        max_images: 4
+
+  trainer:
+    benchmark: True
+    accumulate_grad_batches: 2
