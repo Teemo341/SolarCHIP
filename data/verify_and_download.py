@@ -18,9 +18,9 @@ def download_convert(modal, time_interval = [0, 1e+32]):
     error_url = []
     error_path = f'./data/download_error/{modal}'
     if not os.path.exists(error_path):
-        os.mkdir(error_path)
+        os.makedirs(error_path)
 
-    pbar = tqdm(range(6000))
+    pbar = tqdm(range(time_interval[0], time_interval[1]))
     for i in pbar:
         if i<time_interval[0] or i>time_interval[1]:
             continue
