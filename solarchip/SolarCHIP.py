@@ -384,6 +384,7 @@ class solarchip_mergeall(solarchip_base):
         """
         assert self.id_to_modal[0] == 'hmi', "The first modal must be hmi for the current implementation."
         self.model_dict = nn.ModuleDict()
+        print(base_model_config)
         self.model_dict['all'] = instantiate_from_config(base_model_config)
 
     def get_model(self, modal):

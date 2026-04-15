@@ -43,7 +43,6 @@ def get_parser(**parser_kwargs):
         "-b",
         "--base",
         nargs="*",
-        metavar="/home/chaitf/桌面/SolarCLIP/SolarCLIP_v2/configs/train_configs/reconmodels/ldm/test.yaml",
         help="paths to base configs. Loaded from left-to-right. "
              "Parameters can be overwritten or added with command-line options of the form `--key value`.",
         default=['configs/train_configs/reconmodels/autoencoder/vqvae/vqgan/hmi2hmi_vqgan.yaml']
@@ -58,7 +57,7 @@ def get_parser(**parser_kwargs):
     parser.add_argument(
         "--logdir",
         type=str,
-        default="logs_trans_ldm",
+        default="logs",
         help="log directory",
     )
     parser.add_argument(

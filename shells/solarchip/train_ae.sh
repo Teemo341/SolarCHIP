@@ -1,0 +1,1 @@
+python -m solarchip.main.train --b ./configs/solarchip/ae/mergeall.yaml
