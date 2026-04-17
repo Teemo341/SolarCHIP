@@ -78,13 +78,13 @@ class solarchip_base(pl.LightningModule):
         
         param_list = []
         for _, model in self.model_dict.items():
-            param_list.append(model.parameters())
+            param_list.extend(model.parameters())
         if self.loss_config is not None:
-            param_list.append(self.rec_loss_fn.parameters())
-            param_list.append(self.contrastive_loss_fn.parameters())
+            param_list.extend(self.rec_loss_fn.parameters())
+            param_list.extend(self.contrastive_loss_fn.parameters())
         if self.loss_config["optimizer"] == 'Adam':
             optimizer = torch.optim.Adam(param_list, lr = self.loss_config["lr"])
-        elif self.loss_config[optimizer] == 'AdamW':
+        elif self.loss_config["optimizer"] == 'AdamW':
             optimizer = torch.optim.AdamW(param_list, lr = self.loss_config["lr"])
         else:
             raise ValueError(f'Optimizer {self.loss_config["optimizer"]} is not supported')
@@ -238,6 +238,7 @@ class solarchip_base(pl.LightningModule):
         # log losses
         for k, v in loss_dict.items():
             self.log(f'train/{k}', v, logger=True, on_epoch=True, sync_dist=True)
+        self.log('train_loss', loss_dict['loss'], logger=True, on_epoch=True, sync_dist=True)
     
     def on_train_epoch_end(self):
         schedulers = self.lr_schedulers()
@@ -252,6 +253,7 @@ class solarchip_base(pl.LightningModule):
                 loss_dict = self.forward_full_memory(batch, optimize=False)
         for k, v in loss_dict.items():
             self.log(f'val/{k}', v, logger=True, on_epoch=True, sync_dist=True)
+        self.log('val_loss', loss_dict['loss'], logger=True, on_epoch=True, sync_dist=True)
 
     def test_step(self, batch, batch_idx):
         with torch.no_grad():
@@ -261,6 +263,7 @@ class solarchip_base(pl.LightningModule):
                 loss_dict = self.forward_full_memory(batch, optimize=False)
         for k, v in loss_dict.items():
             self.log(f'test/{k}', v, logger=True, on_epoch=True, sync_dist=True)
+        self.log('test_loss', loss_dict['loss'], logger=True, on_epoch=True, sync_dist=True)
 
     def log_images(self, batch):
         # log images for each modal
@@ -384,7 +387,6 @@ class solarchip_mergeall(solarchip_base):
         """
         assert self.id_to_modal[0] == 'hmi', "The first modal must be hmi for the current implementation."
         self.model_dict = nn.ModuleDict()
-        print(base_model_config)
         self.model_dict['all'] = instantiate_from_config(base_model_config)
 
     def get_model(self, modal):

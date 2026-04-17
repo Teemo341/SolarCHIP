@@ -89,7 +89,7 @@ if __name__ == '__main__':
     
     output, input = modal_transfer(args.time, input_modal=args.input_modal, output_modal=args.output_modal, save_dir=args.save_dir)
 
-    from train_scripts.visualization.solarplot import solarplot, format_timestamp
+    from solarchip.visualization.solarplot import solarplot, format_timestamp
     if args.save_dir is not None:
         os.makedirs(args.save_dir, exist_ok=True)
         output_name = f"{args.time}_{args.output_modal}.png"

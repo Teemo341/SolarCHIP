@@ -13,7 +13,9 @@ class LPIPS(nn.Module):
                  rec_loss_type='l2',
                  log_var_init=0.0,
                  kl_weight=0.1,
-                 perceptual_weight=0):
+                 perceptual_weight=0,
+                 **kwargs
+                 ):
         super().__init__()
         self.rec_loss_type = rec_loss_type
         self.kl_weight = kl_weight

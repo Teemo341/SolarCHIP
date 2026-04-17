@@ -28,7 +28,7 @@ def get_parser(**parser_kwargs):
         const=True,
         default="",
         nargs="?",
-        help="postfix for logdir",
+        help="prefix for logdir",
     )
     parser.add_argument(
         "-r",
@@ -46,13 +46,6 @@ def get_parser(**parser_kwargs):
         help="paths to base configs. Loaded from left-to-right. "
              "Parameters can be overwritten or added with command-line options of the form `--key value`.",
         default=['configs/train_configs/reconmodels/autoencoder/vqvae/vqgan/hmi2hmi_vqgan.yaml']
-    )
-    parser.add_argument(
-        "-f",
-        "--postfix",
-        type=str,
-        default="",
-        help="post-postfix for default name",
     )
     parser.add_argument(
         "--logdir",
@@ -155,16 +148,16 @@ if __name__ == "__main__":
             cfg_fname = os.path.split(opt.base[0])[-1]
             model_name = os.path.split(opt.base[0])[0].split("/")[-1]
             cfg_name = os.path.splitext(cfg_fname)[0]
-            name = "_" + model_name + "_" + cfg_name
+            name = cfg_name+"_" + model_name + "_"
         else:
             name = ""
-        # nowname = now + name + opt.postfix
-        nowname = cfg_name
-        os.makedirs(opt.logdir, exist_ok=True)
+        nowname = name + now
         logdir = os.path.join(opt.logdir, nowname)
 
     ckptdir = os.path.join(logdir, "checkpoints")
     cfgdir = os.path.join(logdir, "configs")
+    # os.makedirs(ckptdir)
+    # os.makedirs(cfgdir)
     seed_everything(opt.seed)
     if opt.use_wandb:
         import wandb

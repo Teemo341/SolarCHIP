@@ -125,7 +125,7 @@ class AE_CNN(VAE_CNN):
     
 
 if __name__ == "__main__":
-    dd_config = {
+    ddconfig = {
         "double_z": True,
         "z_channels": 32,
         "resolution": 1024,
@@ -141,7 +141,7 @@ if __name__ == "__main__":
 
     ae_cnn = VAE_CNN(
         contrastive_dim=32,
-        ddconfig=dd_config,
+        ddconfig=ddconfig,
     ).to("cuda")
     x = torch.randn(22, 1, 1024, 1024).to("cuda")
     z = ae_cnn.encode(x)
@@ -152,7 +152,7 @@ if __name__ == "__main__":
     rec = ae_cnn.decode(z)
     print(rec.shape)
 
-    dd_config = {
+    ddconfig = {
         "double_z": False,
         "z_channels": 32,
         "resolution": 1024,
@@ -168,7 +168,7 @@ if __name__ == "__main__":
 
     ae_cnn = AE_CNN(
         contrastive_dim=32,
-        ddconfig=dd_config,
+        ddconfig=ddconfig,
     ).to("cuda")
     x = torch.randn(22, 1, 1024, 1024).to("cuda")
     z = ae_cnn.encode(x)

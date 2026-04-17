@@ -10,7 +10,7 @@ from pytorch_lightning.trainer import Trainer
 from pytorch_lightning import seed_everything
 
 from models.reconmodels.autoencoder.util import instantiate_from_config
-from train_scripts.utils.util import TrainerSetup
+from solarchip.utils.util import TrainerSetup
 def get_parser(**parser_kwargs):
     def str2bool(v):
         if isinstance(v, bool):

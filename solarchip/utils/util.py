@@ -17,10 +17,7 @@ def instantiate_from_config(config):
         elif config == "__is_unconditional__":
             return None
         raise KeyError("Expected key `target` to instantiate.")
-    target = get_obj_from_str(config["target"])
-    config_params = config.get("params", dict())
-    config_params = OmegaConf.to_container(config_params, resolve=True)
-    return target(**config_params)
+    return get_obj_from_str(config["target"])(**config.get("params", dict()))
 
 def get_obj_from_str(string, reload=False):
     module, cls = string.rsplit(".", 1)
@@ -87,13 +84,13 @@ class TrainerSetup:
     def _init_callbacks(self):
         default_callbacks_cfg = {
             # "global_logging": {
-            #     "target": "train_scripts.utils.callback.GlobalLoggingCallback",
+            #     "target": "solarchip.utils.callback.GlobalLoggingCallback",
             #     "params": {
             #         "logdir": self.logdir,
             #     }
             # },
             "setup_callback": {
-                "target": "train_scripts.utils.callback.SetupCallback",
+                "target": "solarchip.utils.callback.SetupCallback",
                 "params": {
                     "resume": self.opt.resume,
                     "now": self.now,
@@ -105,7 +102,7 @@ class TrainerSetup:
                 }
             },
             "image_logger": {
-                "target": "train_scripts.utils.callback.SolarImageLogger",
+                "target": "solarchip.utils.callback.SolarImageLogger",
                 "params": {
                     "batch_frequency": 75000,
                     # "batch_frequency": 1,
@@ -114,14 +111,14 @@ class TrainerSetup:
                 }
             },
             "learning_rate_logger": {
-                "target": "train_scripts.utils.callback.LearningRateMonitor",
+                "target": "solarchip.utils.callback.LearningRateMonitor",
                 "params": {
                     "logging_interval": "step",
                     # "log_momentum": True
                 }
             },
             "cuda_callback": {
-                "target": "train_scripts.utils.callback.CUDACallback"
+                "target": "solarchip.utils.callback.CUDACallback"
             }
         }
         if version.parse(pl.__version__) >= version.parse('1.4.0'):
@@ -132,8 +129,6 @@ class TrainerSetup:
             callbacks_cfg = OmegaConf.create()
         # if 'metrics_over_trainsteps_checkpoint' in callbacks_cfg:
         if True:
-            print(
-                'Caution: Saving checkpoints every n train steps without deleting. This might require some free space.')
             default_metrics_over_trainsteps_ckpt_dict = {
                 'metrics_over_trainsteps_checkpoint':
                     {"target": 'pytorch_lightning.callbacks.ModelCheckpoint',
@@ -148,21 +143,21 @@ class TrainerSetup:
                      }
                      }
             }
-            # early_stop_callbacks_dict = {
-            #     'early_stop':
-            #     {'target':'pytorch_lightning.callbacks.EarlyStopping',
-            #      'params':{
-            #             'monitor':"val/loss_epoch",   
-            #             'patience':30,           
-            #             'verbose':True,         
-            #             'mode':"min"  
-            #     }
-            #     }
-            # }
             if 'default_metrics_over_trainsteps_ckpt' not in callbacks_cfg:
                 default_callbacks_cfg.update(default_metrics_over_trainsteps_ckpt_dict)
-            # if 'early_stop' not in callbacks_cfg:
-            #     default_callbacks_cfg.update(early_stop_callbacks_dict)
+            early_stop_callbacks_dict = {
+                'early_stop':
+                {'target':'pytorch_lightning.callbacks.EarlyStopping',
+                 'params':{
+                        'monitor':"val/loss_epoch",   
+                        'patience':30,           
+                        'verbose':True,         
+                        'mode':"min"  
+                }
+                }
+            }
+            if 'early_stop' not in callbacks_cfg:
+                default_callbacks_cfg.update(early_stop_callbacks_dict)
 
         callbacks_cfg = OmegaConf.merge(default_callbacks_cfg, callbacks_cfg)
         if 'ignore_keys_callback' in callbacks_cfg and hasattr(self.trainer_opt, 'resume_from_checkpoint'):
