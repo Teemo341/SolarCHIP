@@ -19,7 +19,7 @@ class solarchip_base(pl.LightningModule):
     """
     A wrapper class for multiple models to be used in a single training loop.
     """
-    def __init__(self, modal_list, base_model, loss_config=None, save_memory=False, ckpt_path=None, ignore_keys=list()):
+    def __init__(self, modal_list=['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500'], base_model=None, loss_config=None, save_memory=False, ckpt_path=None, ignore_keys=list()):
         super().__init__()
         self.id_to_modal = modal_list
         self.save_memory = save_memory # whether to save memory by not optimizing all models at the same time
@@ -377,14 +377,11 @@ class solarchip_mergeaia(solarchip_base):
     
 
 class solarchip_mergeall(solarchip_base):
-    def __init__(self, modal_list, base_model, loss_config=None, save_memory=False, ckpt_path=None, ignore_keys=list()):
-        super().__init__(modal_list, base_model, loss_config, save_memory, ckpt_path, ignore_keys)
-        assert self.save_memory == False, "Memory saving is not supported for solarchip_mergeall since all models need to be optimized together for the contrastive loss calculation."
-
     def init_models(self, base_model_config):
         """
         Instantiate the models specified in the config.
         """
+        assert self.save_memory == False, "Memory saving is not supported for solarchip_mergeall since all models need to be optimized together for the contrastive loss calculation."
         assert self.id_to_modal[0] == 'hmi', "The first modal must be hmi for the current implementation."
         self.model_dict = nn.ModuleDict()
         self.model_dict['all'] = instantiate_from_config(base_model_config)

@@ -1,7 +1,7 @@
 model:
   target: solarchip.SolarCHIP.solarchip_mergeall
   params:
-    modal_list: ['hmi', '0094', '0131', '0171', '0193', '0211', '0304', '0335', '1600', '1700', '4500']
+    # modal_list: ['hmi', '0094', '0131', '0171', '0193', '0211', '0304', '0335', '1600', '1700', '4500']
     save_memory: False
     ckpt_path: null
     base_model:
@@ -24,7 +24,7 @@ model:
           dropout: 0.0 
 
     loss_config:
-      epochs: 100
+      epochs: 4
       lr: 1e-5
       optimizer: "AdamW"
       scheduler: "CosineAnnealingLR"
@@ -38,13 +38,13 @@ model:
 data:
   target: data.build.DataModuleFromConfig
   params:
-    batch_size: 32
+    batch_size: 16
     num_workers: 8
     wrap: false
     train:
       target: data.dataset.RandomDataset.RandomImageDataset
       params:
-        modal_list: ['hmi', '0094', '0131', '0171', '0193', '0211', '0304', '0335', '1600', '1700', '4500']
+        # modal_list: ['hmi', '0094', '0131', '0171', '0193', '0211', '0304', '0335', '1600', '1700', '4500']
         log1p_scale: 1
         load_imgs: false
         enhance_list:
@@ -53,12 +53,12 @@ data:
           - 90
         time_interval: 
           - 0
-          - 5000
+          - 50
         time_step: 1
     validation:
       target: data.dataset.RandomDataset.RandomImageDataset
       params:
-        modal_list: ['hmi', '0094', '0131', '0171', '0193', '0211', '0304', '0335', '1600', '1700', '4500']
+        # modal_list: ['hmi', '0094', '0131', '0171', '0193', '0211', '0304', '0335', '1600', '1700', '4500']
         log1p_scale: 1
         load_imgs: false
         enhance_list:
@@ -66,8 +66,8 @@ data:
           - 0.5
           - 90
         time_interval: 
-          - 5000
-          - 5400
+          - 50
+          - 54
         time_step: 1
 
 
@@ -76,7 +76,7 @@ lightning:
     image_logger:
       target: solarchip.utils.callback.SolarImageLogger
       params:
-        batch_frequency: 1000
+        batch_frequency: 100
         max_images: 4
 
   modelcheckpoint:
@@ -87,5 +87,6 @@ lightning:
       every_n_epochs: 1
       save_weights_only: True
   trainer:
-    max_epochs: 100
+    max_epochs: 4
+    log_every_n_steps: 50
     # devices: [0,1]

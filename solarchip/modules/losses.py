@@ -47,7 +47,7 @@ class LPIPS(nn.Module):
         weighted_nll_loss = torch.sum(weighted_nll_loss) / weighted_nll_loss.shape[0]
         nll_loss = torch.sum(nll_loss) / nll_loss.shape[0]
 
-        if isinstance(posteriors, None):
+        if posteriors is None:
             kl_loss = torch.tensor(0.0)
         elif isinstance(posteriors, torch.Tensor): # just z sampled from standard Gaussian, no KL loss
             kl_loss = torch.tensor(0.0)

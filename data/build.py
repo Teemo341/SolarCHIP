@@ -4,6 +4,7 @@ import importlib
 import torch
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.data._utils.collate import default_collate
 
 def instantiate_from_config(config):
     if not "target" in config:
@@ -34,22 +35,50 @@ class WrappedDataset(Dataset):
         return self.data[idx]
 #! bug
 def custom_collate_fn(batch, modal_list):
-    batch_dict = dict()
-    stack_batch = torch.stack(batch,dim=0)
-    for i,modal in enumerate(modal_list):
-        batch_dict[modal] = stack_batch[:,i]
-    return batch_dict
+    if len(batch) == 0:
+        return {}
+
+    first = batch[0]
+    batch_dict = {}
+
+    if isinstance(first, dict):
+        for modal in modal_list:
+            if modal not in first:
+                raise KeyError(f"Modal '{modal}' not found in dataset sample keys: {list(first.keys())}")
+            values = [sample[modal] for sample in batch]
+            if torch.is_tensor(values[0]):
+                batch_dict[modal] = torch.stack(values, dim=0)
+            else:
+                batch_dict[modal] = default_collate(values)
+        return batch_dict
+
+    if torch.is_tensor(first):
+        stack_batch = torch.stack(batch, dim=0)
+        for i, modal in enumerate(modal_list):
+            batch_dict[modal] = stack_batch[:, i]
+        return batch_dict
+
+    if isinstance(first, (list, tuple)):
+        for i, modal in enumerate(modal_list):
+            values = [sample[i] for sample in batch]
+            if torch.is_tensor(values[0]):
+                batch_dict[modal] = torch.stack(values, dim=0)
+            else:
+                batch_dict[modal] = default_collate(values)
+        return batch_dict
+
+    raise TypeError(f"Unsupported sample type in custom_collate_fn: {type(first)}")
 
 class DataModuleFromConfig(pl.LightningDataModule):
     def __init__(self, batch_size, train=None, validation=None, test=None, predict=None,
                  wrap=False, num_workers=None, shuffle_test_loader=False, use_worker_init_fn=False,
-                 shuffle_val_dataloader=False,custom_collate_fn=custom_collate_fn):
+                 shuffle_val_dataloader=False,custom_collate_fn=None):
         super().__init__()
         self.batch_size = batch_size
         self.dataset_configs = dict()
         self.num_workers = num_workers if num_workers is not None else 0
         self.use_worker_init_fn = use_worker_init_fn
-        modal_list = train.params.modal_list
+        modal_list = train.params.get('modal_list', None)
         self.custom_collate_fn = partial(custom_collate_fn, modal_list=modal_list) if custom_collate_fn is not None else None
 
         if train is not None:

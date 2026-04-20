@@ -186,7 +186,7 @@ if __name__ == "__main__":
         data.setup()
         print("#### Data #####")
         for k in data.datasets:
-            print(f"{k}, {data.datasets[k].__class__.__name__}, {len(data.datasets[k])}")
+            print(f"Type: {k}, Name: {data.datasets[k].__class__.__name__}, Len: {len(data.datasets[k])}")
 
 
         #### init trainer

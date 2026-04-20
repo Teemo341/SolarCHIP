@@ -270,7 +270,6 @@ class SolarImageLogger(Callback):
                 hasattr(pl_module, "log_images") and
                 callable(pl_module.log_images) and
                 self.max_images > 0):
-            print('enter if circle')
             logger = type(pl_module.logger)
 
             is_train = pl_module.training
