@@ -24,7 +24,7 @@ model:
           dropout: 0.0 
 
     loss_config:
-      epochs: 4
+      epochs: 2
       lr: 1e-5
       optimizer: "AdamW"
       scheduler: "CosineAnnealingLR"
@@ -38,11 +38,11 @@ model:
 data:
   target: data.build.DataModuleFromConfig
   params:
-    batch_size: 16
+    batch_size: 4
     num_workers: 8
     wrap: false
     train:
-      target: data.dataset.RandomDataset.RandomImageDataset
+      target: data.dataset.SolarDataset.multimodal_dataset
       params:
         # modal_list: ['hmi', '0094', '0131', '0171', '0193', '0211', '0304', '0335', '1600', '1700', '4500']
         log1p_scale: 1
@@ -53,10 +53,10 @@ data:
           - 90
         time_interval: 
           - 0
-          - 50
+          - 500
         time_step: 1
     validation:
-      target: data.dataset.RandomDataset.RandomImageDataset
+      target: data.dataset.SolarDataset.multimodal_dataset
       params:
         # modal_list: ['hmi', '0094', '0131', '0171', '0193', '0211', '0304', '0335', '1600', '1700', '4500']
         log1p_scale: 1
@@ -66,8 +66,8 @@ data:
           - 0.5
           - 90
         time_interval: 
-          - 50
-          - 54
+          - 500
+          - 540
         time_step: 1
 
 
@@ -87,6 +87,7 @@ lightning:
       every_n_epochs: 1
       save_weights_only: True
   trainer:
-    max_epochs: 4
+    max_epochs: 2
+    precision: bf16
     log_every_n_steps: 50
     # devices: [0,1]
