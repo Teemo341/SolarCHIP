@@ -125,32 +125,32 @@ class AE_CNN(VAE_CNN):
     
 
 if __name__ == "__main__":
-    ddconfig = {
-        "double_z": True,
-        "z_channels": 32,
-        "resolution": 1024,
-        "in_channels": 1,
-        "out_ch": 1,
-        "ch": 8,
-        "ch_mult": [1,1,1,1,1,2,2], # spatial downsample 64, channel upsample 4
-        "num_res_blocks": 1,
-        "attn_resolutions": [],
-        "use_linear_attn": False,
-        "dropout": 0.0,
-    }
+    # ddconfig = {
+    #     "double_z": True,
+    #     "z_channels": 32,
+    #     "resolution": 1024,
+    #     "in_channels": 1,
+    #     "out_ch": 1,
+    #     "ch": 8,
+    #     "ch_mult": [1,1,1,1,1,2,2], # spatial downsample 64, channel upsample 4
+    #     "num_res_blocks": 1,
+    #     "attn_resolutions": [],
+    #     "use_linear_attn": False,
+    #     "dropout": 0.0,
+    # }
 
-    ae_cnn = VAE_CNN(
-        contrastive_dim=32,
-        ddconfig=ddconfig,
-    ).to("cuda")
-    x = torch.randn(22, 1, 1024, 1024).to("cuda")
-    z = ae_cnn.encode(x)
-    z = z.mode()
-    print(z.shape)
-    contra = ae_cnn.contrastive_projection(z)
-    print(contra.shape)
-    rec = ae_cnn.decode(z)
-    print(rec.shape)
+    # ae_cnn = VAE_CNN(
+    #     contrastive_dim=32,
+    #     ddconfig=ddconfig,
+    # ).to("cuda")
+    # x = torch.randn(22, 1, 1024, 1024).to("cuda")
+    # z = ae_cnn.encode(x)
+    # z = z.mode()
+    # print(z.shape)
+    # contra = ae_cnn.contrastive_projection(z)
+    # print(contra.shape)
+    # rec = ae_cnn.decode(z)
+    # print(rec.shape)
 
     ddconfig = {
         "double_z": False,
@@ -170,10 +170,25 @@ if __name__ == "__main__":
         contrastive_dim=32,
         ddconfig=ddconfig,
     ).to("cuda")
-    x = torch.randn(22, 1, 1024, 1024).to("cuda")
-    z = ae_cnn.encode(x)
-    print(z.shape)
-    contra = ae_cnn.contrastive_projection(z)
-    print(contra.shape)
-    rec = ae_cnn.decode(z)
-    print(rec.shape)  
+    optimizer = torch.optim.Adam(ae_cnn.parameters(), lr=1e-4)
+    optimizer.zero_grad()
+    x_1 = torch.randn(32, 1, 1024, 1024).to("cuda")
+    z_1 = ae_cnn.encode(x_1)
+    print(z_1.shape)
+    contra_1 = ae_cnn.contrastive_projection(z_1)
+    print(contra_1.shape)
+    rec_1 = ae_cnn.decode(z_1)
+    print(rec_1.shape)
+    loss_1 = ((rec_1 - x_1) ** 2).mean()
+    # loss_1.backward()
+    del x_1, z_1, contra_1, rec_1
+    print("First backward done.")
+    x_2 = torch.randn(32, 1, 1024, 1024).to("cuda")
+    z_2 = ae_cnn.encode(x_2)
+    contra_2 = ae_cnn.contrastive_projection(z_2)
+    rec_2 = ae_cnn.decode(z_2)
+    loss_2 = ((rec_2 - x_2) ** 2).mean()
+    del x_2, z_2, contra_2, rec_2
+    # loss_2.backward()
+    (loss_1 + loss_2).backward()
+    optimizer.step()
