@@ -129,21 +129,21 @@ class TrainerSetup:
             callbacks_cfg = OmegaConf.create()
         # if 'metrics_over_trainsteps_checkpoint' in callbacks_cfg:
         if True:
-            default_metrics_over_trainsteps_ckpt_dict = {
-                'metrics_over_trainsteps_checkpoint':
-                    {"target": 'pytorch_lightning.callbacks.ModelCheckpoint',
-                     'params': {
-                         "dirpath": os.path.join(self.ckptdir, 'trainstep_checkpoints'),
-                         "filename": "val_loss",
-                         "verbose": True,
-                         'save_top_k': 3,
-                         'monitor':'val_loss',
-                         'every_n_epochs': 1,
-                         'save_weights_only': True
-                     }
-                     }
-            }
-            default_callbacks_cfg.update(default_metrics_over_trainsteps_ckpt_dict)
+            # default_metrics_over_trainsteps_ckpt_dict = {
+            #     'metrics_over_trainsteps_checkpoint':
+            #         {"target": 'pytorch_lightning.callbacks.ModelCheckpoint',
+            #          'params': {
+            #              "dirpath": os.path.join(self.ckptdir, 'trainstep_checkpoints'),
+            #              "filename": "{epoch:06}_{val_loss:.4f}",
+            #              "verbose": True,
+            #              'save_top_k': 3,
+            #              'monitor':'val_loss',
+            #              'every_n_epochs': 1,
+            #              'save_weights_only': True
+            #          }
+            #          }
+            # }
+            # default_callbacks_cfg.update(default_metrics_over_trainsteps_ckpt_dict)
             early_stop_callbacks_dict = {
                 'early_stop':
                 {'target':'pytorch_lightning.callbacks.EarlyStopping',
@@ -172,7 +172,7 @@ class TrainerSetup:
             "target": "pytorch_lightning.callbacks.ModelCheckpoint",
             "params": {
                 "dirpath": self.ckptdir,
-                "filename": "{epoch:06}",
+                "filename": "{epoch:06}_{val_loss:.4f}",
                 "verbose": True,
                 "save_last": False,
                 'save_top_k': 3,
