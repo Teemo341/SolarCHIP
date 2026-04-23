@@ -78,6 +78,11 @@ lightning:
       params:
         batch_frequency: 100
         max_images: 4
+    early_stop:
+      target: pytorch_lightning.callbacks.EarlyStopping
+      params:
+            monitor: val_loss 
+            patience: 3
 
   modelcheckpoint:
     params:

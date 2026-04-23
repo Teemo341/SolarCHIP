@@ -136,28 +136,26 @@ class TrainerSetup:
                          "dirpath": os.path.join(self.ckptdir, 'trainstep_checkpoints'),
                          "filename": "val_loss",
                          "verbose": True,
-                         'save_top_k': 1,
-                         'monitor':'val/loss_epoch',
+                         'save_top_k': 3,
+                         'monitor':'val_loss',
                          'every_n_epochs': 1,
                          'save_weights_only': True
                      }
                      }
             }
-            if 'default_metrics_over_trainsteps_ckpt' not in callbacks_cfg:
-                default_callbacks_cfg.update(default_metrics_over_trainsteps_ckpt_dict)
+            default_callbacks_cfg.update(default_metrics_over_trainsteps_ckpt_dict)
             early_stop_callbacks_dict = {
                 'early_stop':
                 {'target':'pytorch_lightning.callbacks.EarlyStopping',
                  'params':{
-                        'monitor':"val/loss_epoch",   
+                        'monitor':"val_loss",   
                         'patience':30,           
                         'verbose':True,         
                         'mode':"min"  
                 }
                 }
             }
-            if 'early_stop' not in callbacks_cfg:
-                default_callbacks_cfg.update(early_stop_callbacks_dict)
+            default_callbacks_cfg.update(early_stop_callbacks_dict)
 
         callbacks_cfg = OmegaConf.merge(default_callbacks_cfg, callbacks_cfg)
         if 'ignore_keys_callback' in callbacks_cfg and hasattr(self.trainer_opt, 'resume_from_checkpoint'):
@@ -177,7 +175,7 @@ class TrainerSetup:
                 "filename": "{epoch:06}",
                 "verbose": True,
                 "save_last": False,
-                'save_top_k': -1,
+                'save_top_k': 3,
                 'every_n_epochs': 20,
                 'save_weights_only': True
             }
