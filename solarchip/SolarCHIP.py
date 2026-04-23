@@ -381,7 +381,6 @@ class solarchip_mergeall(solarchip_base):
         """
         Instantiate the models specified in the config.
         """
-        assert self.save_memory == False, "Memory saving is not supported for solarchip_mergeall since all models need to be optimized together for the contrastive loss calculation."
         assert self.id_to_modal[0] == 'hmi', "The first modal must be hmi for the current implementation."
         self.model_dict = nn.ModuleDict()
         self.model_dict['all'] = instantiate_from_config(base_model_config)
