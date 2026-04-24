@@ -296,6 +296,10 @@ class solarchip_base(pl.LightningModule):
                     latent = latent[0]
                 elif isinstance(latent, DiagonalGaussianDistribution):
                     latent = latent.mode()
+                if len(latent.shape) == 3: # if latent is of shape [B, L, D]
+                    latent = latent[:, 0, :] # remove cls token
+                    feature_size = int(math.sqrt(latent.shape[1]))
+                    latent = latent.transpose(1, 2).reshape(latent.shape[0], -1, feature_size, feature_size) # reshape latent to [B, C, H, W]
                 samples[f'visualization/{modal}/input'] = input.cpu()
                 samples[f'visualization/{modal}/rec'] = rec.cpu()
                 samples[f'visualization/{modal}/latent'] = latent.cpu()

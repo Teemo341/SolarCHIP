@@ -215,17 +215,17 @@ class SolarImageLogger(Callback):
                         plt.imshow(image_array[i, 0, :, :], cmap=cmap, vmin=vmin, vmax=vmax)
                     else:
                         if image_array.shape[1] >3: # ususally latent
-                            image_array = image_array[i, :3, :, :]
-                        image_array = (image_array.transpose(1, 2, 0)- image_array.min()) / (image_array.max() - image_array.min())
-                        plt.imshow(image_array)
-                elif len(image_array.shape) == 3:
+                            image_tmp = image_array[i, :3, :, :] # (3, h, w)
+                        image_tmp = (image_tmp.transpose(1, 2, 0)- image_tmp.min()) / (image_tmp.max() - image_tmp.min())
+                        plt.imshow(image_tmp)
+                elif len(image_array.shape) == 3: # (c, h, w)
                     if image_array.shape[0] < 3:
-                        plt.imshow(image_array[i, :, :], cmap=cmap, vmin=vmin, vmax=vmax)
+                        plt.imshow(image_array[0, :, :], cmap=cmap, vmin=vmin, vmax=vmax)
                     else:
                         if image_array.shape[0] > 3:
-                            image_array = image_array[:3, :, :]
-                        image_array = (image_array.transpose(1, 2, 0) - image_array.min()) / (image_array.max() - image_array.min())
-                        plt.imshow(image_array)
+                            image_tmp = image_array[:3, :, :]
+                        image_tmp = (image_tmp.transpose(1, 2, 0) - image_tmp.min()) / (image_tmp.max() - image_tmp.min())
+                        plt.imshow(image_tmp)
                 plt.title(f"{k} - Image {i}")
                 plt.subplots_adjust(wspace=0, hspace=0)
 
