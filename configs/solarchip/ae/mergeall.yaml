@@ -50,7 +50,7 @@ data:
         enhance_list:
           - 1024
           - 0.5
-          - 90
+          - 360
         time_interval: 
           - 0
           - 500
@@ -64,7 +64,7 @@ data:
         enhance_list:
           - 1024
           - 0.5
-          - 90
+          - 360
         time_interval: 
           - 500
           - 540

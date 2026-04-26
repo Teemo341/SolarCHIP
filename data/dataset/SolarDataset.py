@@ -17,7 +17,7 @@ def transfer_log1p(input_array, log1p_scale = 1):
     else:
         raise ValueError('input_array should be numpy array or torch tensor')
 
-def image_preprocess(image_list, image_size = 224, p_flip = 0.5, p_rotate = 90):
+def image_preprocess(image_list, image_size = 224, p_flip = 0.5, p_rotate = 360):
     N = len(image_list)
     channels = np.zeros(N, dtype=int)
     for i in range(N):
@@ -148,6 +148,57 @@ class multimodal_dataset(Dataset):
 
         return exist_idx
 
+    def compute_modal_statistics(self):
+        acc = {}
+        for modal_name in self.modal_list:
+            acc[modal_name] = {
+                'count': 0,
+                'sum': 0.0,
+                'sq_sum': 0.0,
+                'min': np.inf,
+                'max': -np.inf,
+            }
+
+        for idx in tqdm(range(len(self)), desc='Computing modal stats via __getitem__'):
+            image_dict = self[idx]
+            for modal_name, img in image_dict.items():
+                if isinstance(img, torch.Tensor):
+                    img = img.detach().cpu().numpy()
+                img = np.nan_to_num(np.asarray(img), nan=0.0).astype(np.float64, copy=False)
+                img_flat = img.reshape(-1)
+                if img_flat.size == 0:
+                    continue
+
+                acc[modal_name]['count'] += img_flat.size
+                acc[modal_name]['sum'] += img_flat.sum()
+                acc[modal_name]['sq_sum'] += np.square(img_flat).sum()
+                acc[modal_name]['min'] = min(acc[modal_name]['min'], img_flat.min())
+                acc[modal_name]['max'] = max(acc[modal_name]['max'], img_flat.max())
+
+        modal_stats = {}
+        for modal_name in self.modal_list:
+            total_count = acc[modal_name]['count']
+            if total_count == 0:
+                stats = {'min': None, 'max': None, 'mean': None, 'var': None}
+            else:
+                mean = acc[modal_name]['sum'] / total_count
+                var = acc[modal_name]['sq_sum'] / total_count - mean * mean
+                var = max(var, 0.0)
+                stats = {
+                    'min': float(acc[modal_name]['min']),
+                    'max': float(acc[modal_name]['max']),
+                    'mean': float(mean),
+                    'var': float(var)
+                }
+
+            modal_stats[modal_name] = stats
+            print(
+                f"{modal_name} stats: min={stats['min']}, max={stats['max']}, "
+                f"mean={stats['mean']}, var={stats['var']}"
+            )
+
+        return modal_stats
+
     def __len__(self):
         return len(self.exist_idx)
     
@@ -171,10 +222,8 @@ class multimodal_dataset(Dataset):
 
 if __name__ == '__main__':
 
-    dataset = multimodal_dataset(modal_list=['hmi','0094'], load_imgs=True, enhance_list=[224,0.5,90],time_interval=[0,7452000],time_step=60)
-    from torch.utils.data import DataLoader
-    dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
-    for batch in dataloader:
-        print(batch.shape)
-        break
+    dataset = multimodal_dataset(enhance_list=[1024,0.5,360],time_interval=[0,500],time_step=1)
+    stats = dataset.compute_modal_statistics()
+    dataset = multimodal_dataset(enhance_list=[1024,0.5,360],time_interval=[500,540],time_step=1)
+    stats = dataset.compute_modal_statistics()
     
