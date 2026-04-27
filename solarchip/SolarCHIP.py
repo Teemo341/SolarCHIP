@@ -140,7 +140,9 @@ class solarchip_base(pl.LightningModule):
         int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1)
         total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
         loss_dict['hmi/total_loss'] = total_loss
-        if optimize: optimizer.step()
+        if optimize:
+            self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
+            optimizer.step()
         optimizer.zero_grad(set_to_none=True) # remove the computational graph for hmi to save memory
 
         z_hmi = z_hmi.detach() # detach z_hmi to save memory
@@ -176,7 +178,9 @@ class solarchip_base(pl.LightningModule):
                 int_ctr_loss = int_ctr_loss.item()
             total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
             loss_dict[f'{modal}/total_loss'] = total_loss
-            if optimize: optimizer.step()
+            if optimize:
+                self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
+                optimizer.step()
             optimizer.zero_grad(set_to_none=True) # remove the computational graph for the modal to save memory
             # remove the computational graph for the modal to save memory
             del z_hmi, z_aia
@@ -243,7 +247,9 @@ class solarchip_base(pl.LightningModule):
                 if optimize: self.manual_backward(int_ctr_loss_tmp)
                 total_loss += int_ctr_loss_tmp.item()
                 del int_ctr_loss_tmp
-        if optimize: optimizer.step()
+        if optimize:
+            self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
+            optimizer.step()
         optimizer.zero_grad(set_to_none=True) # remove the computational graph to save memory
 
         loss_dict['loss'] = total_loss
@@ -363,7 +369,9 @@ class solarchip_mergeaia(solarchip_base):
         int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1)
         total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
         loss_dict['hmi/total_loss'] = total_loss
-        if optimize: optimizer.step()
+        if optimize:
+            self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
+            optimizer.step()
         optimizer.zero_grad(set_to_none=True) # remove the computational graph for hmi to save memory
 
         z_hmi = z_hmi.detach() # detach z_hmi to save memory
@@ -400,7 +408,9 @@ class solarchip_mergeaia(solarchip_base):
             total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
             loss_dict[f'{modal}/total_loss'] = total_loss
             del z_hmi, z_aia
-        if optimize: optimizer.step()
+        if optimize:
+            self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
+            optimizer.step()
         optimizer.zero_grad(set_to_none=True) # remove the computational graph for the modal to save memory
             
         loss_dict['loss'] = sum([v for k, v in loss_dict.items() if k.endswith('total_loss')])
