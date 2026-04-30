@@ -31,14 +31,14 @@ model:
       rec_loss_type: l2
       kl_weight: 0.0
       perceptual_weight: 0.0
-      cls_contrastive_weight: 0.0
+      cls_contrastive_weight: 1.0
       pat_contrastive_weight: 0.0
       int_contrastive_weight: 0.0
 
 data:
   target: data.build.DataModuleFromConfig
   params:
-    batch_size: 32
+    batch_size: 16
     num_workers: 8
     wrap: False
     train:
@@ -76,7 +76,7 @@ lightning:
     image_logger:
       target: solarchip.utils.callback.SolarImageLogger
       params:
-        batch_frequency: 4
+        batch_frequency: 10
         max_images: 2
     early_stop:
       target: pytorch_lightning.callbacks.EarlyStopping
