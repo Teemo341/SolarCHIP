@@ -1,1 +1,1 @@
-python -m solarchip.main.train --b ./configs/solarchip/ae/mergeaia.yaml
+python -m solarchip.main.train --b ./configs/solarchip/ae/base.yaml

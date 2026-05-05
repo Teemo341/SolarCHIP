@@ -1,5 +1,5 @@
 model:
-  target: solarchip.SolarCHIP.solarchip_mergeaia
+  target: solarchip.SolarCHIP.solarchip_base
   params:
     # modal_list: ['hmi', '0094', '0131', '0171', '0193', '0211', '0304', '0335', '1600', '1700', '4500']
     save_memory: True
@@ -31,9 +31,9 @@ model:
       rec_loss_type: l2
       kl_weight: 0.0
       perceptual_weight: 0.0
-      cls_contrastive_weight: 1.0
-      pat_contrastive_weight: 1.0
-      int_contrastive_weight: 1.0
+      cls_contrastive_weight: 0.0
+      pat_contrastive_weight: 0.0
+      int_contrastive_weight: 0.0
 
 data:
   target: data.build.DataModuleFromConfig
