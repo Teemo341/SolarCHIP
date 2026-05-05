@@ -112,24 +112,25 @@ class solarchip_base(pl.LightningModule):
         cls_ctr_loss, pat_ctr_loss, int_ctr_loss = 0, 0, 0
         # calculate contrastive loss between hmi and other modals
         z_hmi = self.get_model('hmi').contrastive_projection(z_hmi) # project hmi latent to contrastive space for contrastive loss calculation
-        for i in range(1, len(self.id_to_modal)):
-            modal = self.id_to_modal[i]
-            aia = batch[modal].to(self.device)
-            with torch.no_grad():
-                rec_aia, z_aia = self.get_model(modal)(aia)
-                z_aia = self.get_model(modal).contrastive_projection(z_aia) # project aia latent to contrastive space for contrastive loss calculation
-            if self.cls_ctr_weight >0:
-                cls_ctr_loss_tmp = self.contrastive_loss_fn.cls_contrastive_loss(z_hmi, z_aia)
-                loss_dict[f"cls_ctr_loss/hmi_{modal}"] = cls_ctr_loss_tmp.item()
-                cls_ctr_loss += cls_ctr_loss_tmp
-            if self.pat_ctr_weight > 0:
-                pat_ctr_loss_tmp = self.contrastive_loss_fn.pat_contrastive_loss(z_hmi, z_aia)
-                loss_dict[f"pat_ctr_loss/hmi_{modal}"] = pat_ctr_loss_tmp.item()
-                pat_ctr_loss += pat_ctr_loss_tmp
-            if self.int_ctr_weight > 0:
-                int_ctr_loss_tmp = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia)
-                loss_dict[f"int_ctr_loss/hmi_{modal}"] = int_ctr_loss_tmp.item()
-                int_ctr_loss += int_ctr_loss_tmp
+        if self.cls_ctr_weight > 0 or self.pat_ctr_weight > 0 or self.int_ctr_weight > 0: # only calculate contrastive loss if at least one type of contrastive loss is used to save computation
+            for i in range(1, len(self.id_to_modal)):
+                modal = self.id_to_modal[i]
+                aia = batch[modal].to(self.device)
+                with torch.no_grad():
+                    rec_aia, z_aia = self.get_model(modal)(aia)
+                    z_aia = self.get_model(modal).contrastive_projection(z_aia) # project aia latent to contrastive space for contrastive loss calculation
+                if self.cls_ctr_weight >0:
+                    cls_ctr_loss_tmp = self.contrastive_loss_fn.cls_contrastive_loss(z_hmi, z_aia)
+                    loss_dict[f"cls_ctr_loss/hmi_{modal}"] = cls_ctr_loss_tmp.item()
+                    cls_ctr_loss += cls_ctr_loss_tmp
+                if self.pat_ctr_weight > 0:
+                    pat_ctr_loss_tmp = self.contrastive_loss_fn.pat_contrastive_loss(z_hmi, z_aia)
+                    loss_dict[f"pat_ctr_loss/hmi_{modal}"] = pat_ctr_loss_tmp.item()
+                    pat_ctr_loss += pat_ctr_loss_tmp
+                if self.int_ctr_weight > 0:
+                    int_ctr_loss_tmp = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia)
+                    loss_dict[f"int_ctr_loss/hmi_{modal}"] = int_ctr_loss_tmp.item()
+                    int_ctr_loss += int_ctr_loss_tmp
         cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1)
         pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1)
         int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1)
@@ -137,7 +138,7 @@ class solarchip_base(pl.LightningModule):
         loss_dict['hmi/total_loss'] = total_loss.item()
         if optimize:
             self.manual_backward(total_loss) # backward the total loss to save memory instead of backward each loss component separately
-            self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
+            # self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
             optimizer.step()
         optimizer.zero_grad(set_to_none=True) # remove the computational graph for hmi to save memory
 
@@ -168,7 +169,7 @@ class solarchip_base(pl.LightningModule):
             loss_dict[f'{modal}/total_loss'] = total_loss.item()
             if optimize:
                 self.manual_backward(total_loss)
-                self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
+                # self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
                 optimizer.step()
             optimizer.zero_grad(set_to_none=True) # remove the computational graph for the modal to save memory
             
@@ -231,7 +232,7 @@ class solarchip_base(pl.LightningModule):
                 del int_ctr_loss_tmp
         if optimize:
             self.manual_backward(total_loss)
-            self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
+            # self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
             optimizer.step()
         optimizer.zero_grad(set_to_none=True) # remove the computational graph to save memory
 
@@ -286,7 +287,7 @@ class solarchip_base(pl.LightningModule):
                 elif isinstance(latent, DiagonalGaussianDistribution):
                     latent = latent.mode()
                 if len(latent.shape) == 3: # if latent is of shape [B, L, D]
-                    latent = latent[:, 0, :] # remove cls token
+                    latent = latent[:, 0:, :] # remove cls token
                     feature_size = int(math.sqrt(latent.shape[1]))
                     latent = latent.transpose(1, 2).reshape(latent.shape[0], -1, feature_size, feature_size) # reshape latent to [B, C, H, W]
                 samples[f'visualization/{modal}/input'] = input.cpu()
@@ -324,32 +325,33 @@ class solarchip_mergeaia(solarchip_base):
         cls_ctr_loss, pat_ctr_loss, int_ctr_loss = 0, 0, 0
         # calculate contrastive loss between hmi and other modals
         z_hmi = self.get_model('hmi').contrastive_projection(z_hmi) # project hmi latent to contrastive space for contrastive loss calculation
-        for i in range(1, len(self.id_to_modal)):
-            modal = self.id_to_modal[i]
-            aia = batch[modal].to(self.device)
-            with torch.no_grad():
-                rec_aia, z_aia = self.get_model(modal)(aia)
-                z_aia = self.get_model(modal).contrastive_projection(z_aia) # project aia latent to contrastive space for contrastive loss calculation
-            if self.cls_ctr_weight >0:
-                cls_ctr_loss_tmp = self.contrastive_loss_fn.cls_contrastive_loss(z_hmi, z_aia)
-                loss_dict[f"cls_ctr_loss/hmi_{modal}"] = cls_ctr_loss_tmp.item()
-                cls_ctr_loss += cls_ctr_loss_tmp
-            if self.pat_ctr_weight > 0:
-                pat_ctr_loss_tmp = self.contrastive_loss_fn.pat_contrastive_loss(z_hmi, z_aia)
-                loss_dict[f"pat_ctr_loss/hmi_{modal}"] = pat_ctr_loss_tmp.item()
-                pat_ctr_loss += pat_ctr_loss_tmp
-            if self.int_ctr_weight > 0:
-                int_ctr_loss_tmp = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia)
-                loss_dict[f"int_ctr_loss/hmi_{modal}"] = int_ctr_loss_tmp.item()
-                int_ctr_loss += int_ctr_loss_tmp
-        cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1)
-        pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1)
-        int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1)
+        if self.cls_ctr_weight > 0 or self.pat_ctr_weight > 0 or self.int_ctr_weight > 0: # only calculate contrastive loss if at least one type of contrastive loss is used to save computation
+            for i in range(1, len(self.id_to_modal)):
+                modal = self.id_to_modal[i]
+                aia = batch[modal].to(self.device)
+                with torch.no_grad():
+                    rec_aia, z_aia = self.get_model(modal)(aia)
+                    z_aia = self.get_model(modal).contrastive_projection(z_aia) # project aia latent to contrastive space for contrastive loss calculation
+                if self.cls_ctr_weight >0:
+                    cls_ctr_loss_tmp = self.contrastive_loss_fn.cls_contrastive_loss(z_hmi, z_aia)
+                    loss_dict[f"cls_ctr_loss/hmi_{modal}"] = cls_ctr_loss_tmp.item()
+                    cls_ctr_loss += cls_ctr_loss_tmp
+                if self.pat_ctr_weight > 0:
+                    pat_ctr_loss_tmp = self.contrastive_loss_fn.pat_contrastive_loss(z_hmi, z_aia)
+                    loss_dict[f"pat_ctr_loss/hmi_{modal}"] = pat_ctr_loss_tmp.item()
+                    pat_ctr_loss += pat_ctr_loss_tmp
+                if self.int_ctr_weight > 0:
+                    int_ctr_loss_tmp = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia)
+                    loss_dict[f"int_ctr_loss/hmi_{modal}"] = int_ctr_loss_tmp.item()
+                    int_ctr_loss += int_ctr_loss_tmp
+            cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1)
+            pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1)
+            int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1)
         total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
         loss_dict['hmi/total_loss'] = total_loss.item()
         if optimize:
             self.manual_backward(total_loss) # backward the total loss to save memory instead of backward each loss component separately
-            self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
+            # self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
             optimizer.step()
         optimizer.zero_grad(set_to_none=True) # remove the computational graph for hmi to save memory
 
@@ -382,7 +384,7 @@ class solarchip_mergeaia(solarchip_base):
             total_loss_aia += total_loss
         if optimize:
             self.manual_backward(total_loss_aia)
-            self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
+            # self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
             optimizer.step()
         optimizer.zero_grad(set_to_none=True) # remove the computational graph for the modal to save memory
             
