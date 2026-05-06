@@ -7,7 +7,7 @@ model:
     base_model:
       target: solarchip.modules.CNN.AE_CNN
       params:
-        contrastive_dim: 32
+        contrastive_dim: 128
         ckpt_path: null
 
         ddconfig:
@@ -16,8 +16,8 @@ model:
           resolution: 1024
           in_channels: 1
           out_ch: 1
-          ch: 64 # initial channel number, will be multiplied by ch_mult at each downsample
-          ch_mult: [1,1,1,1,2,2,2] # spatial downsample 64, channel upsample 4(ch_mult)-1
+          ch: 32 # initial channel number, will be multiplied by ch_mult at each downsample
+          ch_mult: [1,1,1,2,2,2,2] # spatial downsample 64, channel upsample 4(ch_mult)-1
           num_res_blocks: 2
           attn_resolutions: []
           use_linear_attn: False
@@ -38,7 +38,7 @@ model:
 data:
   target: data.build.DataModuleFromConfig
   params:
-    batch_size: 4
+    batch_size: 6
     num_workers: 8
     wrap: False
     train:
