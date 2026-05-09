@@ -89,14 +89,17 @@ class solarchip_base(pl.LightningModule):
         else:
             raise ValueError(f'Optimizer {self.loss_config["optimizer"]} is not supported')
 
-        if self.loss_config["scheduler"] == 'CosineAnnealingLR':
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.loss_config["epochs"])
-        elif self.loss_config["scheduler"] == None:
+        if self.loss_config.get("scheduler", None) is None or self.loss_config.get("scheduler", None).lower() == 'none':
             scheduler = None
+        elif self.loss_config["scheduler"] == 'CosineAnnealingLR':
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.loss_config["epochs"])
         else:
             raise ValueError(f'Scheduler {self.loss_config["scheduler"]} is not supported')
         
-        return {'optimizer': optimizer, 'lr_scheduler': scheduler}
+        if scheduler is None:
+            return optimizer
+        else:
+            return {'optimizer': optimizer, 'lr_scheduler': scheduler}
     
     def forward_save_memory(self, batch, optimize=True):
         loss_dict = {}
