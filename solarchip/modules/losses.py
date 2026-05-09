@@ -63,8 +63,9 @@ class LPIPS(nn.Module):
         loss_dict = {
             "rec_loss": rec_loss.mean().item(),
             "nll_loss": nll_loss.item(),
-            "kl_loss": kl_loss.item(),
         }
+        if self.kl_weight > 0 and kl_loss.item() > 0:
+            loss_dict["kl_loss"] = kl_loss.item()
 
         return loss, loss_dict
     
