@@ -24,17 +24,7 @@ SolarControl: 在 SolarLDM 之上叠一个 ControlNet 风格的控制分支。
       的子类,移除 torch.no_grad,使主 UNet 可训练。
     - SolarControlNet:auxiliary.ControlNet.cldm.cldm.ControlNet 的子类,
       `input_hint_block` 改为单层 zero-conv 投影(latent 形状直接对齐)。
-
-Import 隔离:
-  ControlNet 的 cldm.py 内部用 `from ldm.X import ...`,这里 `ldm` 指它自带的
-  `auxiliary/ControlNet/ldm/`(版本比 `auxiliary/ldm/` 新,SpatialTransformer 等
-  接口不同)。本文件在 import 时把 `auxiliary/ControlNet/` 临时插入 sys.path,
-  使得 cldm 这一支的 `from ldm.X` 解析到 ControlNet 自带的 ldm;SolarLDM 那边
-  继续用 `from auxiliary.ldm.X` 全限定路径,两条线在 sys.modules 里以不同 key
-  共存,不互相干扰。
 """
-
-from __future__ import annotations
 
 import os
 import sys
@@ -42,27 +32,16 @@ import sys
 import torch
 import torch.nn as nn
 
-# ----------------------------------------------------------------------
-# 局部 sys.path 注入,让 cldm 内部 `from ldm.X` 找到 ControlNet 自带的 ldm
-# ----------------------------------------------------------------------
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-_CN_ROOT = os.path.join(_REPO_ROOT, "auxiliary", "ControlNet")
-if _CN_ROOT not in sys.path:
-    sys.path.insert(0, _CN_ROOT)
-
-# 顶层导入:cldm 内部的 `from ldm.X` 现在解析到 auxiliary/ControlNet/ldm/
-# 注意 ControlNet 的 cldm/ldm 都是 PEP 420 隐式 namespace package(没有 __init__.py)
-from cldm.cldm import ControlNet, ControlledUnetModel  # noqa: E402
-from ldm.modules.diffusionmodules.util import (  # noqa: E402
+from auxiliary.ControlNet.cldm.cldm import ControlNet, ControlledUnetModel
+from auxiliary.ldm.modules.diffusionmodules.util import (
     conv_nd,
     zero_module,
     timestep_embedding,
 )
-from ldm.modules.diffusionmodules.openaimodel import TimestepEmbedSequential  # noqa: E402
+from auxiliary.ldm.modules.diffusionmodules.openaimodel import TimestepEmbedSequential
 
-# 自家 SolarLDM 用 auxiliary.ldm 这条全限定路径,两条线在 sys.modules 里独立存在
-from downstream.ldm.Solarldm import SolarLDM  # noqa: E402
-from solarchip.utils.util import instantiate_from_config  # noqa: E402
+from downstream.ldm.SolarLDM import SolarLDM
+from solarchip.utils.util import instantiate_from_config
 
 
 # ======================================================================

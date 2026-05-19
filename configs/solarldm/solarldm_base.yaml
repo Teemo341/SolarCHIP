@@ -8,14 +8,14 @@
 # ============================================================
 
 model:
-  target: downstream.ldm.Solarldm.SolarLDM
+  target: downstream.ldm.SolarLDM.SolarLDM
   params:
     # ---- SolarCHIP custom keys ----
     first_stage_key: 'hmi'      # 要重建/生成的模态
     cond_stage_key:  '0193'     # 条件模态(与 first 相同则视为无条件 / self-condition)
 
     # ---- LDM 基础超参 ----
-    learning_rate: 1.0e-4
+    learning_rate: 1e-4
     image_size: 16              # latent 边长 = 1024 / 2^(len(ch_mult)-1) = 1024 / 64 = 16
     channels: 128               # latent 通道数 = AE_CNN.ddconfig.z_channels
     timesteps: 1000
@@ -44,7 +44,7 @@ model:
         modal_list: ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']
         save_memory: True
         # !!! 这里换成你训练好的 SolarCHIP checkpoint !!!
-        ckpt_path: logs/CNN_AE_base_solarchip_/checkpoints/last.ckpt
+        # ckpt_path: logs/CNN_AE_base_solarchip_/checkpoints/last.ckpt
         base_model:
           target: solarchip.modules.CNN.AE_CNN
           params:
@@ -67,7 +67,7 @@ model:
 
     # ---- UNet(latent space 去噪网络) ----
     unet_config:
-      target: ldm.modules.diffusionmodules.openaimodel.UNetModel
+      target: auxiliary.ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
         image_size: 16          # 与上面 image_size 一致
         # concat 模式下输入是 [z_t, cond_z] 沿 channel 拼起来,所以 in_channels 翻倍
