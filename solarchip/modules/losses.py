@@ -21,7 +21,7 @@ class LPIPS(nn.Module):
         self.kl_weight = kl_weight
         self.perceptual_weight = perceptual_weight
 
-        self.logvar = nn.Parameter(torch.ones(size=())*log_var_init)
+        # self.logvar = nn.Parameter(torch.ones(size=())*log_var_init)
         if perceptual_weight > 0:
             self.perceptual_loss = lpips.LPIPS(net='vgg').eval()
 
@@ -39,8 +39,8 @@ class LPIPS(nn.Module):
             perceptual_loss = self.perceptual_loss(inputs.repeat(1, 3, 1, 1).contiguous(), recons.repeat(1, 3, 1, 1).contiguous())
             rec_loss = rec_loss + self.perceptual_weight * perceptual_loss
 
-        nll_loss = rec_loss / torch.exp(self.logvar) + self.logvar
-        # nll_loss = rec_loss
+        # nll_loss = rec_loss / torch.exp(self.logvar) + self.logvar
+        nll_loss = rec_loss
         if weights is not None:
             nll_loss = weights*nll_loss
         nll_loss = torch.mean(nll_loss)
