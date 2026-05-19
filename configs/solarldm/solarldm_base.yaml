@@ -1,0 +1,141 @@
+# ============================================================
+# SolarLDM: 在 SolarCHIP 多模态 AE 的 latent 空间上训练 LDM。
+# 默认 first_stage_key='hmi', cond_stage_key='0193';
+# 改其它模态名只需替换下方两个字段。
+# ------------------------------------------------------------
+# 运行示例(在仓库根目录):
+#   python -m solarchip.main.train -b ./configs/solarldm/solarldm_base.yaml
+# ============================================================
+
+model:
+  target: downstream.ldm.SolarLDM.SolarLDM
+  params:
+    # ---- SolarCHIP custom keys ----
+    first_stage_key: 'hmi'      # 要重建/生成的模态
+    cond_stage_key:  '0193'     # 条件模态(与 first 相同则视为无条件 / self-condition)
+
+    # ---- LDM 基础超参 ----
+    learning_rate: 1e-4
+    image_size: 16              # latent 边长 = 1024 / 2^(len(ch_mult)-1) = 1024 / 64 = 16
+    channels: 128               # latent 通道数 = AE_CNN.ddconfig.z_channels
+    timesteps: 1000
+    beta_schedule: linear
+    linear_start: 0.00085
+    linear_end: 0.0120
+    log_every_t: 100
+    loss_type: l2
+    parameterization: eps
+    monitor: val/loss_simple_ema
+    use_ema: True
+
+    # 条件注入方式:
+    #   - 'concat'    把 cond latent 沿 channel 维拼到输入 — 适合
+    #                 first/cond AE 输出形状完全相同的情况(同一套 ddconfig 默认就是)。
+    #   - 'crossattn' 用交叉注意力,需要在 unet_config 里打开 spatial_transformer。
+    conditioning_key: concat
+
+    # ---- 11-模态 SolarCHIP wrapper:训练 SolarLDM 前必须有可加载的 ckpt ----
+    # 这里复用 configs/solarchip/CNN_AE_base.yaml 的同一份 wrapper 描述,
+    # 只是额外提供 ckpt_path,让所有 AE 都从训练好的权重里恢复。
+    # SolarLDM 会在初始化后把没用到的 AE_CNN 全部丢掉,节省显存。
+    solarchip_config:
+      target: solarchip.SolarCHIP.solarchip_base
+      params:
+        modal_list: ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']
+        save_memory: True
+        # !!! 这里换成你训练好的 SolarCHIP checkpoint !!!
+        # ckpt_path: logs/CNN_AE_base_solarchip_/checkpoints/last.ckpt
+        base_model:
+          target: solarchip.modules.CNN.AE_CNN
+          params:
+            contrastive_dim: 128
+            ckpt_path: null
+            ddconfig:
+              double_z: False
+              z_channels: 128
+              resolution: 1024
+              in_channels: 1
+              out_ch: 1
+              ch: 64
+              ch_mult: [1, 1, 1, 1, 2, 2, 2]   # 7 个阶段 -> spatial /64
+              num_res_blocks: 2
+              attn_resolutions: []
+              use_linear_attn: False
+              dropout: 0.0
+        # loss_config 留空即可:SolarLDM 不再继续训练 AE。
+        loss_config: null
+
+    # ---- UNet(latent space 去噪网络) ----
+    unet_config:
+      target: auxiliary.ldm.modules.diffusionmodules.openaimodel.UNetModel
+      params:
+        image_size: 16          # 与上面 image_size 一致
+        # concat 模式下输入是 [z_t, cond_z] 沿 channel 拼起来,所以 in_channels 翻倍
+        in_channels: 256        # = 128 (z_t) + 128 (cond_z)
+        out_channels: 128       # = z_channels
+        model_channels: 192
+        num_res_blocks: 2
+        attention_resolutions: [4, 2, 1]   # 在 16/4, 16/2, 16/1 三个分辨率上加 attention
+        channel_mult: [1, 2, 4]
+        num_head_channels: 32
+        use_scale_shift_norm: True
+        resblock_updown: True
+
+data:
+  target: data.build.DataModuleFromConfig
+  params:
+    batch_size: 2
+    num_workers: 8
+    wrap: False
+    train:
+      target: data.dataset.SolarDataset.multimodal_dataset
+      params:
+        modal_list: ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']
+        log1p_scale: 1
+        load_imgs: False
+        enhance_list:
+          - 1024
+          - 0.5
+          - 360
+        time_interval:
+          - 0
+          - 5000
+        time_step: 10
+    validation:
+      target: data.dataset.SolarDataset.multimodal_dataset
+      params:
+        modal_list: ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']
+        log1p_scale: 1
+        load_imgs: False
+        enhance_list:
+          - 1024
+          - 0.5
+          - 360
+        time_interval:
+          - 5000
+          - 5400
+        time_step: 10
+
+lightning:
+  callbacks:
+    image_logger:
+      target: solarchip.utils.callback.SolarImageLogger
+      params:
+        batch_frequency: 500
+        max_images: 2
+        clamp: False
+
+  modelcheckpoint:
+    params:
+      monitor: val/loss_simple_ema
+      mode: min
+      save_last: True
+      save_top_k: 3
+      every_n_epochs: 1
+      save_weights_only: True
+
+  trainer:
+    max_epochs: 200
+    precision: bf16
+    log_every_n_steps: 10
+    # devices: [0]
