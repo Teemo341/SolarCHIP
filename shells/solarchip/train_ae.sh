@@ -1,1 +1,1 @@
-python -m solarchip.main.train --b ./configs/solarchip/ae/base.yaml
+python -m solarchip.main.train --b ./configs/solarchip/CNN_AE_base.yaml

@@ -149,7 +149,7 @@ class TrainerSetup:
                 {'target':'pytorch_lightning.callbacks.EarlyStopping',
                  'params':{
                         'monitor':"val_loss",   
-                        'patience':30,           
+                        'patience':100,           
                         'verbose':True,         
                         'mode':"min"  
                 }

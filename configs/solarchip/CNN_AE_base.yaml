@@ -7,33 +7,33 @@ model:
     base_model:
       target: solarchip.modules.CNN.AE_CNN
       params:
-        contrastive_dim: 128
+        contrastive_dim: 32
         ckpt_path: null
 
         ddconfig:
           double_z: False
-          z_channels: 128
+          z_channels: 32
           resolution: 1024
           in_channels: 1
           out_ch: 1
           ch: 32 # initial channel number, will be multiplied by ch_mult at each downsample
-          ch_mult: [1,1,1,2,2,2,2] # spatial downsample 64, channel upsample 4(ch_mult)-1
+          ch_mult: [1,1,1,2,2,2] # spatial downsample 2^(ch_mult-1), channel upsample *(ch_mult)
           num_res_blocks: 2
           attn_resolutions: []
           use_linear_attn: False
-          dropout: 0.0 
+          dropout: 0.0
 
     loss_config:
-      epochs: 100
+      epochs: 400
       lr: 1e-3
       optimizer: "AdamW"
-      # scheduler: "CosineAnnealingLR"
+      scheduler: "CosineAnnealingLR"
       rec_loss_type: l2
       kl_weight: 0.0
       perceptual_weight: 0.0 # better not use perceptual loss for solar images, as it may cause color distortion
-      cls_contrastive_weight: 0.0
-      pat_contrastive_weight: 0.0
-      int_contrastive_weight: 0.0
+      cls_contrastive_weight: 0.1
+      pat_contrastive_weight: 0.1
+      int_contrastive_weight: 0.1
 
 data:
   target: data.build.DataModuleFromConfig
@@ -94,7 +94,7 @@ lightning:
       save_weights_only: True
 
   trainer:
-    max_epochs: 100
+    max_epochs: 400
     precision: bf16
     log_every_n_steps: 6
     # devices: [0,1]
