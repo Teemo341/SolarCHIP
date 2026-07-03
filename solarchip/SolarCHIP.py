@@ -100,6 +100,12 @@ class solarchip_base(pl.LightningModule):
             return optimizer
         else:
             return {'optimizer': optimizer, 'lr_scheduler': scheduler}
+
+    def norm_loss(self, loss, eps=1e-32):
+        if isinstance(loss, torch.Tensor):
+            return loss / (loss.detach().abs() + eps)
+        else:
+            return 1
     
     def forward_save_memory(self, batch, optimize=True):
         loss_dict = {}
@@ -142,9 +148,10 @@ class solarchip_base(pl.LightningModule):
         cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1)
         pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1)
         int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1)
-        total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
+        total_loss = rec_loss + self.cls_ctr_weight * self.norm_loss(cls_ctr_loss) + self.pat_ctr_weight * self.norm_loss(pat_ctr_loss) + self.int_ctr_weight * self.norm_loss(int_ctr_loss)
+        total_loss_item = rec_loss.item() + self.cls_ctr_weight * cls_ctr_loss.item() + self.pat_ctr_weight * pat_ctr_loss.item() + self.int_ctr_weight * int_ctr_loss.item()
         del rec_loss, cls_ctr_loss, pat_ctr_loss, int_ctr_loss
-        loss_dict['hmi/total_loss'] = total_loss.item()
+        loss_dict['hmi/total_loss'] = total_loss_item
         if optimize:
             self.manual_backward(total_loss) # backward the total loss to save memory instead of backward each loss component separately
             # self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
@@ -175,9 +182,10 @@ class solarchip_base(pl.LightningModule):
                 if self.int_ctr_weight > 0:
                     int_ctr_loss = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia)
                     loss_dict[f"int_ctr_loss/hmi_{modal}"] = (int_ctr_loss.item()+loss_dict[f"int_ctr_loss/hmi_{modal}"]) / 2
-            total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
+            total_loss = rec_loss + self.cls_ctr_weight * self.norm_loss(cls_ctr_loss) + self.pat_ctr_weight * self.norm_loss(pat_ctr_loss) + self.int_ctr_weight * self.norm_loss(int_ctr_loss)
+            total_loss_item = rec_loss.item() + self.cls_ctr_weight * cls_ctr_loss.item() + self.pat_ctr_weight * pat_ctr_loss.item() + self.int_ctr_weight * int_ctr_loss.item()
             del z_aia, rec_loss, cls_ctr_loss, pat_ctr_loss, int_ctr_loss
-            loss_dict[f'{modal}/total_loss'] = total_loss.item()
+            loss_dict[f'{modal}/total_loss'] = total_loss_item
             if optimize:
                 self.manual_backward(total_loss)
                 # self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
@@ -220,27 +228,30 @@ class solarchip_base(pl.LightningModule):
             z_aia = self.get_model(modal).contrastive_projection(z_aia) # project aia latent to contrastive space for contrastive loss calculation
             if self.cls_ctr_weight>0:
                 cls_ctr_loss_tmp = self.contrastive_loss_fn.cls_contrastive_loss(z_hmi, z_aia)
-                cls_ctr_loss_tmp = cls_ctr_loss_tmp/ (len(self.id_to_modal)-1) * self.cls_ctr_weight
-                loss_dict[f"cls_ctr_loss/hmi_{modal}"] = cls_ctr_loss_tmp.item()
-                loss_dict['hmi/total_loss'] += cls_ctr_loss_tmp.item()
-                loss_dict[f'{modal}/total_loss'] += cls_ctr_loss_tmp.item()
-                total_loss += cls_ctr_loss_tmp
+                cls_ctr_loss_tmp = cls_ctr_loss_tmp / (len(self.id_to_modal)-1)
+                cls_ctr_loss_item = cls_ctr_loss_tmp.item() * self.cls_ctr_weight
+                loss_dict[f"cls_ctr_loss/hmi_{modal}"] = cls_ctr_loss_item
+                loss_dict['hmi/total_loss'] += cls_ctr_loss_item
+                loss_dict[f'{modal}/total_loss'] += cls_ctr_loss_item
+                total_loss += self.cls_ctr_weight * self.norm_loss(cls_ctr_loss_tmp)
                 del cls_ctr_loss_tmp
             if self.pat_ctr_weight > 0:
                 pat_ctr_loss_tmp = self.contrastive_loss_fn.pat_contrastive_loss(z_hmi, z_aia)
-                pat_ctr_loss_tmp = pat_ctr_loss_tmp/ (len(self.id_to_modal)-1) * self.pat_ctr_weight
-                loss_dict[f"pat_ctr_loss/hmi_{modal}"] = pat_ctr_loss_tmp.item()
-                loss_dict['hmi/total_loss'] += pat_ctr_loss_tmp.item()
-                loss_dict[f'{modal}/total_loss'] += pat_ctr_loss_tmp.item()
-                total_loss += pat_ctr_loss_tmp
+                pat_ctr_loss_tmp = pat_ctr_loss_tmp / (len(self.id_to_modal)-1)
+                pat_ctr_loss_item = pat_ctr_loss_tmp.item() * self.pat_ctr_weight
+                loss_dict[f"pat_ctr_loss/hmi_{modal}"] = pat_ctr_loss_item
+                loss_dict['hmi/total_loss'] += pat_ctr_loss_item
+                loss_dict[f'{modal}/total_loss'] += pat_ctr_loss_item
+                total_loss += self.pat_ctr_weight * self.norm_loss(pat_ctr_loss_tmp)
                 del pat_ctr_loss_tmp
             if self.int_ctr_weight > 0:
                 int_ctr_loss_tmp = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia)
-                int_ctr_loss_tmp = int_ctr_loss_tmp/ (len(self.id_to_modal)-1) * self.int_ctr_weight
-                loss_dict[f"int_ctr_loss/hmi_{modal}"] = int_ctr_loss_tmp.item()
-                loss_dict['hmi/total_loss'] += int_ctr_loss_tmp.item()
-                loss_dict[f'{modal}/total_loss'] += int_ctr_loss_tmp.item()
-                total_loss += int_ctr_loss_tmp
+                int_ctr_loss_tmp = int_ctr_loss_tmp / (len(self.id_to_modal)-1)
+                int_ctr_loss_item = int_ctr_loss_tmp.item() * self.int_ctr_weight
+                loss_dict[f"int_ctr_loss/hmi_{modal}"] = int_ctr_loss_item
+                loss_dict['hmi/total_loss'] += int_ctr_loss_item
+                loss_dict[f'{modal}/total_loss'] += int_ctr_loss_item
+                total_loss += self.int_ctr_weight * self.norm_loss(int_ctr_loss_tmp)
                 del int_ctr_loss_tmp
         if optimize:
             self.manual_backward(total_loss)
@@ -364,9 +375,10 @@ class solarchip_mergeaia(solarchip_base):
         cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1)
         pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1)
         int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1)
-        total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
+        total_loss = rec_loss + self.cls_ctr_weight * self.norm_loss(cls_ctr_loss) + self.pat_ctr_weight * self.norm_loss(pat_ctr_loss) + self.int_ctr_weight * self.norm_loss(int_ctr_loss)
+        total_loss_item = rec_loss.item() + self.cls_ctr_weight * cls_ctr_loss.item() + self.pat_ctr_weight * pat_ctr_loss.item() + self.int_ctr_weight * int_ctr_loss.item()
         del rec_loss, cls_ctr_loss, pat_ctr_loss, int_ctr_loss
-        loss_dict['hmi/total_loss'] = total_loss.item()
+        loss_dict['hmi/total_loss'] = total_loss_item
         if optimize:
             self.manual_backward(total_loss) # backward the total loss to save memory instead of backward each loss component separately
             # self.clip_gradients(optimizer, gradient_clip_val=1.0, gradient_clip_algorithm="norm" )
@@ -401,9 +413,10 @@ class solarchip_mergeaia(solarchip_base):
             cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1)
             pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1)
             int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1)
-            total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
+            total_loss = rec_loss + self.cls_ctr_weight * self.norm_loss(cls_ctr_loss) + self.pat_ctr_weight * self.norm_loss(pat_ctr_loss) + self.int_ctr_weight * self.norm_loss(int_ctr_loss)
+            total_loss_item = rec_loss.item() + self.cls_ctr_weight * cls_ctr_loss.item() + self.pat_ctr_weight * pat_ctr_loss.item() + self.int_ctr_weight * int_ctr_loss.item()
             del z_aia, rec_loss, cls_ctr_loss, pat_ctr_loss, int_ctr_loss
-            loss_dict[f'{modal}/total_loss'] = total_loss.item()
+            loss_dict[f'{modal}/total_loss'] = total_loss_item
             total_loss_aia += total_loss
             del total_loss
         if optimize:
