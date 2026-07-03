@@ -398,6 +398,9 @@ class solarchip_mergeaia(solarchip_base):
                 if self.int_ctr_weight > 0:
                     int_ctr_loss = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia)
                     loss_dict[f"int_ctr_loss/hmi_{modal}"] = (int_ctr_loss.item()+loss_dict[f"int_ctr_loss/hmi_{modal}"]) / 2
+            cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1)
+            pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1)
+            int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1)
             total_loss = rec_loss + self.cls_ctr_weight * cls_ctr_loss + self.pat_ctr_weight * pat_ctr_loss + self.int_ctr_weight * int_ctr_loss
             del z_aia, rec_loss, cls_ctr_loss, pat_ctr_loss, int_ctr_loss
             loss_dict[f'{modal}/total_loss'] = total_loss.item()

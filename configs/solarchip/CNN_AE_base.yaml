@@ -24,21 +24,21 @@ model:
           dropout: 0.0
 
     loss_config:
-      epochs: 400
+      epochs: 200
       lr: 1e-3
       optimizer: "AdamW"
-      scheduler: "CosineAnnealingLR"
+      # scheduler: "CosineAnnealingLR"
       rec_loss_type: l2
       kl_weight: 0.0
       perceptual_weight: 0.0 # better not use perceptual loss for solar images, as it may cause color distortion
-      cls_contrastive_weight: 0.1
-      pat_contrastive_weight: 0.1
-      int_contrastive_weight: 0.1
+      cls_contrastive_weight: 0.01
+      pat_contrastive_weight: 0.0001
+      int_contrastive_weight: 0.0001
 
 data:
   target: data.build.DataModuleFromConfig
   params:
-    batch_size: 6
+    batch_size: 5
     num_workers: 8
     wrap: False
     train:
@@ -76,14 +76,14 @@ lightning:
     image_logger:
       target: solarchip.utils.callback.SolarImageLogger
       params:
-        batch_frequency: 38
+        batch_frequency: 23
         max_images: 2
         
-    # early_stop:
-    #   target: pytorch_lightning.callbacks.EarlyStopping
-    #   params:
-    #         monitor: val_loss
-    #         patience: 10
+    early_stop:
+      target: pytorch_lightning.callbacks.EarlyStopping
+      params:
+            monitor: val_loss
+            patience: 30
 
   modelcheckpoint:
     params:
@@ -94,7 +94,7 @@ lightning:
       save_weights_only: True
 
   trainer:
-    max_epochs: 400
+    max_epochs: 200
     precision: bf16
     log_every_n_steps: 6
     # devices: [0,1]
