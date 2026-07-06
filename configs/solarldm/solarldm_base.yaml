@@ -93,7 +93,7 @@ data:
         modal_list: ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']
         log1p_scale: 1
         load_imgs: False
-        enhance_list:
+        torch_augment_type:
           - 1024
           - 0.5
           - 360
@@ -107,7 +107,7 @@ data:
         modal_list: ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']
         log1p_scale: 1
         load_imgs: False
-        enhance_list:
+        torch_augment_type:
           - 1024
           - 0.5
           - 360

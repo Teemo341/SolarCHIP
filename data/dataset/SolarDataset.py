@@ -1,4 +1,6 @@
 # 2025/02/07 a new version SolarDataset for hmi and 10 aia modals.
+import os
+import json
 from tqdm import tqdm
 import numpy as np
 import torch
@@ -8,12 +10,45 @@ from torchvision import transforms
 from data.utils import read_pt_image as read_image
 from data.utils import load_list, get_modal_dir
 
+modal_status = {'hmi':{'mean': -0.0033644122878536808, 'std': 1.4462468177923982}, 
+                '0094':{'mean': 0.7777174413423921, 'std': 0.6687824480747059}, 
+                '0131':{'mean': 1.5390822848548482, 'std': 1.0912435219464955}, 
+                '0171':{'mean': 4.058454606964953, 'std': 2.0019955472124473}, 
+                '0193':{'mean': 4.2085857338462915, 'std': 2.031354106628024}, 
+                '0211':{'mean': 3.4567200476856237, 'std': 1.8330093045320472}, 
+                '0304':{'mean': 1.7023200257985773, 'std': 1.4301543643478678}, 
+                '0335':{'mean': 0.917317310470085, 'std': 0.8385782332253703}, 
+                '1600':{'mean': 2.733473493754583, 'std': 1.8048273547243583}, 
+                '1700':{'mean': 4.482010005696708, 'std': 2.2629650384920006}, 
+                '4500':{'mean': 6.433152566577294, 'std': 3.16857582465075}}
+
      
 def transfer_log1p(input_array, log1p_scale = 1):
     if isinstance(input_array,np.ndarray):
         return np.sign(input_array)*np.log1p(np.abs(input_array))
     elif isinstance(input_array,torch.Tensor):
         return torch.sign(input_array)*torch.log1p(log1p_scale*torch.abs(input_array))
+    else:
+        raise ValueError('input_array should be numpy array or torch tensor')
+    
+def transfer_zscore(input_array, modal_list):
+    """
+    Apply per-modal z-score normalization to a stacked image tensor.
+    
+    Args:
+        input_array: np.ndarray or torch.Tensor of shape [N_modal, 1, H, W]
+        modal_list: list of modal names, e.g. ['hmi', '0094', ...]
+    Returns:
+        Normalized array/tensor of same shape
+    """
+    # Build per-modal mean/std arrays matching the stacked shape [N_modal, 1, 1, 1]
+    means = np.array([[modal_status[m]['mean']] for m in modal_list], dtype=np.float32).reshape(-1, 1, 1, 1)
+    stds  = np.array([[modal_status[m]['std']]  for m in modal_list], dtype=np.float32).reshape(-1, 1, 1, 1)
+
+    if isinstance(input_array, np.ndarray):
+        return (input_array - means) / stds
+    elif isinstance(input_array, torch.Tensor):
+        return (input_array - means) / stds
     else:
         raise ValueError('input_array should be numpy array or torch tensor')
 
@@ -55,16 +90,13 @@ def image_preprocess(image_list, image_size = 224, p_flip = 0.5, p_rotate = 360)
     image = torch.stack(image_list, dim=0)
     return image
 
-def enhance_funciton(image, enhance_type = 'log1p', rescale_value = 1, log1p_scale = 1):
+def enhance_funciton(image, modal_list, enhance_type = ['log1p'], log1p_scale = 1):
     
-    if enhance_type == 'log1p':
+    if 'log1p' in enhance_type:
         image = transfer_log1p(image, log1p_scale)
-    elif enhance_type == 'None':
-        pass
-    else:
-        raise ValueError('enhance_type should be log1p or None')
+    if 'zscore' in enhance_type:
+        image = transfer_zscore(image, modal_list)
     
-    image = image*rescale_value
     return image
 
 
@@ -99,14 +131,18 @@ class multimodal_dataset(Dataset):
     def __init__(self, modal_list = ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500'],
                   log1p_scale = 1,
                   load_imgs = False, 
-                  enhance_list = [224,0.5,90], 
+                  torch_augment_type = [224,0.5,90], 
                   time_interval = [0,5400], # (2024/12/31 - 2010/05/01) = 5358 days
-                  time_step = 1): #time_step = 1 means get every data
+                  time_step = 1, #time_step = 1 means get every data
+                  enhance_type = ['log1p'], # 'log1p', 'zscore'
+                  ):
         # 定义数据集
         self.dataset = []
         self.modal_list = modal_list 
         self.log1p_scale = log1p_scale
-        self.enhance_list = enhance_list
+        self.torch_augment_type = torch_augment_type
+        self.enhance_type = enhance_type
+        assert modal_list[0] == 'hmi', "The first modal should be 'hmi'"
         for name in modal_list:
             if not name in ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']:
                 raise ValueError(f'{name} not supported')
@@ -131,7 +167,7 @@ class multimodal_dataset(Dataset):
             del self.dataset
             self.image_dic = {}
             for idx in tqdm(self.exist_idx, desc='Merging images'):
-                self.image_dic[idx] = image_preprocess([image_dic[idx] for image_dic in list_of_image_dic], image_size = enhance_list[0], p_flip = enhance_list[1], p_rotate = enhance_list[2])
+                self.image_dic[idx] = image_preprocess([image_dic[idx] for image_dic in list_of_image_dic], image_size = torch_augment_type[0], p_flip = torch_augment_type[1], p_rotate = torch_augment_type[2])
                 for image_dic in list_of_image_dic:
                     del image_dic[idx]
             del list_of_image_dic
@@ -148,7 +184,7 @@ class multimodal_dataset(Dataset):
 
         return exist_idx
 
-    def compute_modal_statistics(self):
+    def compute_modal_statistics(self, stats_path = None):
         acc = {}
         for modal_name in self.modal_list:
             acc[modal_name] = {
@@ -188,14 +224,21 @@ class multimodal_dataset(Dataset):
                     'min': float(acc[modal_name]['min']),
                     'max': float(acc[modal_name]['max']),
                     'mean': float(mean),
-                    'var': float(var)
+                    'var': float(var),
+                    'std': float(np.sqrt(var))
                 }
 
             modal_stats[modal_name] = stats
             print(
                 f"{modal_name} stats: min={stats['min']}, max={stats['max']}, "
-                f"mean={stats['mean']}, var={stats['var']}"
+                f"mean={stats['mean']}, var={stats['var']}, std={stats['std']}"
             )
+
+        if stats_path is not None:
+            os.makedirs(os.path.dirname(stats_path), exist_ok=True)
+            with open(stats_path, 'w') as f:
+                json.dump(modal_stats, f, indent=4)
+            print(f"Modal statistics saved to {stats_path}")
 
         return modal_stats
 
@@ -211,8 +254,8 @@ class multimodal_dataset(Dataset):
                 path,_ = self.dataset[i][self.exist_idx[idx]]
                 img = read_image(path)
                 image_list.append(img)
-            image = image_preprocess(image_list, image_size = self.enhance_list[0], p_flip = self.enhance_list[1], p_rotate = self.enhance_list[2])
-            image = enhance_funciton(image, enhance_type = 'log1p', rescale_value = 1, log1p_scale=self.log1p_scale)
+            image = image_preprocess(image_list, image_size = self.torch_augment_type[0], p_flip = self.torch_augment_type[1], p_rotate = self.torch_augment_type[2])
+            image = enhance_funciton(image, modal_list=self.modal_list, enhance_type = self.enhance_type, log1p_scale=self.log1p_scale)
             # return image # torch.Size([modal_num, channel_num, image_size, image_size])
             image_dict = {}
             for i in range(len(self.dataset)):
@@ -222,8 +265,8 @@ class multimodal_dataset(Dataset):
 
 if __name__ == '__main__':
 
-    dataset = multimodal_dataset(enhance_list=[1024,0.5,360],time_interval=[0,500],time_step=1)
-    stats = dataset.compute_modal_statistics()
-    dataset = multimodal_dataset(enhance_list=[1024,0.5,360],time_interval=[500,540],time_step=1)
+    dataset = multimodal_dataset(torch_augment_type=[1024,0.5,360],time_interval=[0,5400],time_step=1)
+    stats = dataset.compute_modal_statistics(stats_path='./data/modal_stats.json')
+    dataset = multimodal_dataset(torch_augment_type=[1024,0.5,360],time_interval=[500,540],time_step=1)
     stats = dataset.compute_modal_statistics()
     

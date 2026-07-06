@@ -5,14 +5,14 @@ class RandomImageDataset(Dataset):
     def __init__(self, modal_list=['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500'],
                  log1p_scale=1,
                  load_imgs=False,
-                 enhance_list=[224,0.5,90],
+                 torch_augment_type=[224,0.5,90],
                  time_interval=[0,5400],
                  time_step=1):
         """随机多模态数据集，初始化参数与 SolarDataset.multimodal_dataset 保持一致。"""
         self.modal_list = modal_list
         self.log1p_scale = log1p_scale
         self.load_imgs = load_imgs
-        self.enhance_list = enhance_list
+        self.torch_augment_type = torch_augment_type
         self.time_interval = time_interval
         self.time_step = time_step
 
@@ -24,7 +24,7 @@ class RandomImageDataset(Dataset):
             raise ValueError('time_interval should satisfy end > start')
 
         self.exist_idx = torch.arange(start, end, step).tolist()
-        self.image_size = int(enhance_list[0])
+        self.image_size = int(torch_augment_type[0])
 
     def __len__(self):
         return len(self.exist_idx)
