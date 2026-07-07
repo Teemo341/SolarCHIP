@@ -298,24 +298,27 @@ class solarchip_base(pl.LightningModule):
             self.log(f'test/{k}', v, logger=True, on_epoch=True, sync_dist=True)
         self.log('test_loss', loss_dict['loss'], logger=True, on_epoch=True, sync_dist=True)
 
-    def log_images(self, batch):
+    def log_images(self, batch, log_input=True, log_rec=True, log_latent=False):
         # log images for each modal
         with torch.no_grad():
             samples = {}
             for modal in self.id_to_modal:
                 input = batch[modal].to(self.device)
                 rec, latent = self.get_model(modal)(input)
-                if isinstance(latent, tuple):
-                    latent = latent[0]
-                elif isinstance(latent, DiagonalGaussianDistribution):
-                    latent = latent.mode()
-                if len(latent.shape) == 3: # if latent is of shape [B, L, D]
-                    latent = latent[:, 0:, :] # remove cls token
-                    feature_size = int(math.sqrt(latent.shape[1]))
-                    latent = latent.transpose(1, 2).reshape(latent.shape[0], -1, feature_size, feature_size) # reshape latent to [B, C, H, W]
-                samples[f'visualization/{modal}/input'] = input.cpu()
-                samples[f'visualization/{modal}/rec'] = rec.cpu()
-                samples[f'visualization/{modal}/latent'] = latent.cpu()
+                if log_input:
+                    samples[f'visualization/{modal}/input'] = input.cpu()
+                if log_rec:
+                    samples[f'visualization/{modal}/rec'] = rec.cpu()
+                if log_latent:
+                    if isinstance(latent, tuple):
+                        latent = latent[0]
+                    elif isinstance(latent, DiagonalGaussianDistribution):
+                        latent = latent.mode()
+                    if len(latent.shape) == 3: # if latent is of shape [B, L, D]
+                        latent = latent[:, 0:, :] # remove cls token
+                        feature_size = int(math.sqrt(latent.shape[1]))
+                        latent = latent.transpose(1, 2).reshape(latent.shape[0], -1, feature_size, feature_size) # reshape latent to [B, C, H, W]
+                    samples[f'visualization/{modal}/latent'] = latent.cpu()
         return samples
     
 class solarchip_mergeaia(solarchip_base):

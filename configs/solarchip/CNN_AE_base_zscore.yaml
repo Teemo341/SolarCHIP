@@ -43,8 +43,6 @@ data:
       target: data.dataset.SolarDataset.multimodal_dataset
       params:
         enhance_type: ['log1p','zscore']
-        modal_stats_path: 'data/idx_list/modal_stats.json'  # pre-computed stats
-        rescale_value: 1
         load_imgs: False
         torch_augment_type:
           - 1024
@@ -57,9 +55,7 @@ data:
     validation:
       target: data.dataset.SolarDataset.multimodal_dataset
       params:
-        enhance_type: 'zscore'
-        modal_stats_path: 'data/idx_list/modal_stats.json'
-        rescale_value: 1
+        enhance_type: ['log1p', 'zscore']
         load_imgs: False
         torch_augment_type:
           - 1024

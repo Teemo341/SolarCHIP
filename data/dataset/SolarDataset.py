@@ -10,6 +10,7 @@ from torchvision import transforms
 from data.utils import read_pt_image as read_image
 from data.utils import load_list, get_modal_dir
 
+# the status after log1p, make sure zscore is applied after log1p
 modal_status = {'hmi':{'mean': -0.0033644122878536808, 'std': 1.4462468177923982}, 
                 '0094':{'mean': 0.7777174413423921, 'std': 0.6687824480747059}, 
                 '0131':{'mean': 1.5390822848548482, 'std': 1.0912435219464955}, 
@@ -265,8 +266,8 @@ class multimodal_dataset(Dataset):
 
 if __name__ == '__main__':
 
-    dataset = multimodal_dataset(torch_augment_type=[1024,0.5,360],time_interval=[0,5400],time_step=1)
-    stats = dataset.compute_modal_statistics(stats_path='./data/modal_stats.json')
-    dataset = multimodal_dataset(torch_augment_type=[1024,0.5,360],time_interval=[500,540],time_step=1)
+    # dataset = multimodal_dataset(torch_augment_type=[1024,0.5,360],time_interval=[0,5400],time_step=1)
+    # stats = dataset.compute_modal_statistics(stats_path='./data/modal_stats.json')
+    dataset = multimodal_dataset(torch_augment_type=[1024,0.5,360],time_interval=[0,540],time_step=1,enhance_type = ['log1p','zscore'])
     stats = dataset.compute_modal_statistics()
     
