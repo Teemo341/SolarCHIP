@@ -24,8 +24,9 @@ model:
 
     loss_config:
       epochs: 200
-      lr: 1e-3
+      lr: 1e-2
       optimizer: "AdamW"
+      scheduler: "CosineAnnealingLR"
       rec_loss_type: l2
       kl_weight: 0.0
       perceptual_weight: 0.0
@@ -87,7 +88,7 @@ lightning:
       save_last: True
       save_top_k: 3
       every_n_epochs: 1
-      save_weights_only: True
+      save_weights_only: False
 
   trainer:
     max_epochs: 200

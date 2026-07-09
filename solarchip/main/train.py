@@ -207,7 +207,7 @@ if __name__ == "__main__":
         
         #### run training
         try:
-            trainer.fit(model=model, datamodule=data)
+            trainer.fit(model=model, datamodule=data, ckpt_path=getattr(opt, 'resume_from_checkpoint', None))
         except Exception as e:
             print(f"Training error: {e}")
             import traceback
