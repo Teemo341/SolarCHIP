@@ -15,7 +15,7 @@ model:
     cond_stage_key:  '0094'     # 条件模态(与 first 相同则视为无条件 / self-condition)
 
     # ---- LDM 基础超参 ----
-    learning_rate: 1e-3
+    learning_rate: 1e-4
     image_size: 32              # latent 边长 = 1024 / 2^(len(ch_mult)-1) = 1024 / 32 = 32
     channels: 32                # latent 通道数 = AE_CNN.ddconfig.z_channels
     timesteps: 1000
@@ -87,8 +87,8 @@ model:
 data:
   target: data.build.DataModuleFromConfig
   params:
-    batch_size: 16
-    num_workers: 8
+    batch_size: 32
+    num_workers: 4
     wrap: False
     train:
       target: data.dataset.SolarDataset.multimodal_dataset
@@ -124,13 +124,14 @@ lightning:
     image_logger:
       target: solarchip.utils.callback.SolarImageLogger
       params:
-        batch_frequency: 200
+        log_on_batch_idx: False
+        batch_frequency: 16
         max_images: 2
 
   modelcheckpoint:
     params:
       monitor: val/loss_simple_ema
-      filename: '{epoch:06}_{loss_simple_ema:.4f}'
+      filename: '{epoch:06}'
       mode: min
       save_last: True
       save_top_k: 3
@@ -141,5 +142,5 @@ lightning:
     strategy: ddp
     max_epochs: 200
     precision: bf16-mixed
-    log_every_n_steps: 10
+    log_every_n_steps: 4
     # devices: [0]

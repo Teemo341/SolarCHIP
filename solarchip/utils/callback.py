@@ -266,7 +266,7 @@ class SolarImageLogger(Callback):
         check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
         # print(f"check_idx {check_idx}")
         # if (self.check_frequency(check_idx) and  batch_idx % self.batch_freq == 0 and
-        if (batch_idx % self.batch_freq == 0 and
+        if (check_idx % self.batch_freq == 0 and
                 hasattr(pl_module, "log_images") and
                 callable(pl_module.log_images) and
                 self.max_images > 0):
@@ -311,10 +311,6 @@ class SolarImageLogger(Callback):
             self.log_img(pl_module, batch, batch_idx, split="train")
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        # print("here is 1")
-        # print(f'global_step: {pl_module.global_step}')
-        # if not self.disabled and (pl_module.global_step > 0 or self.log_first_step):
-        #     print("here is 0")
-        self.log_img(pl_module, batch, batch_idx, split="val")
-        # print("here is 2")
+        if not self.disabled and (pl_module.global_step > 0 or self.log_first_step):
+            self.log_img(pl_module, batch, batch_idx, split="val")
 
