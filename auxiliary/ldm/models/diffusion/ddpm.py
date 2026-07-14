@@ -16,14 +16,17 @@ from contextlib import contextmanager
 from functools import partial
 from tqdm import tqdm
 from torchvision.utils import make_grid
-from pytorch_lightning.utilities.distributed import rank_zero_only
+from pytorch_lightning.utilities.rank_zero import rank_zero_only
 
-from ldm.util import log_txt_as_img, exists, default, ismap, isimage, mean_flat, count_params, instantiate_from_config
-from ldm.modules.ema import LitEma
-from ldm.modules.distributions.distributions import normal_kl, DiagonalGaussianDistribution
-from ldm.models.autoencoder import VQModelInterface, IdentityFirstStage, AutoencoderKL
-from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
-from ldm.models.diffusion.ddim import DDIMSampler
+from auxiliary.ldm.util import log_txt_as_img, exists, default, ismap, isimage, mean_flat, count_params, instantiate_from_config
+from auxiliary.ldm.modules.ema import LitEma
+from auxiliary.ldm.modules.distributions.distributions import normal_kl, DiagonalGaussianDistribution
+from auxiliary.ldm.models.autoencoder import IdentityFirstStage, AutoencoderKL
+# VQModelInterface 在原版 Stable Diffusion 中使用,本项目不涉及 VQ-VAE,
+# 但父类 LatentDiffusion 中有 isinstance 检查需要这个符号存在。
+VQModelInterface = type('VQModelInterface', (), {})
+from auxiliary.ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
+from auxiliary.ldm.models.diffusion.ddim import DDIMSampler
 
 
 __conditioning_keys__ = {'concat': 'c_concat',
@@ -109,9 +112,11 @@ class DDPM(pl.LightningModule):
         self.loss_type = loss_type
 
         self.learn_logvar = learn_logvar
-        self.logvar = torch.full(fill_value=logvar_init, size=(self.num_timesteps,))
+        logvar = torch.full(fill_value=logvar_init, size=(self.num_timesteps,))
         if self.learn_logvar:
-            self.logvar = nn.Parameter(self.logvar, requires_grad=True)
+            self.logvar = nn.Parameter(logvar, requires_grad=True)
+        else:
+            self.register_buffer('logvar', logvar)
 
 
     def register_schedule(self, given_betas=None, beta_schedule="linear", timesteps=1000,
@@ -475,7 +480,7 @@ class LatentDiffusion(DDPM):
 
     @rank_zero_only
     @torch.no_grad()
-    def on_train_batch_start(self, batch, batch_idx, dataloader_idx):
+    def on_train_batch_start(self, batch, batch_idx, dataloader_idx=0):
         # only for very first batch
         if self.scale_by_std and self.current_epoch == 0 and self.global_step == 0 and batch_idx == 0 and not self.restarted_from_ckpt:
             assert self.scale_factor == 1., 'rather not use custom rescaling and std-rescaling simultaneously'

@@ -110,6 +110,32 @@ def nondefault_trainer_args(opt):
     return sorted(k for k in vars(args) if getattr(opt, k) != getattr(args, k))
 
 if __name__ == "__main__":
+    # Monkey-patch: 修复 fsspec 在 NAS 上保存 checkpoint 时的跨设备 rename 失败
+    # 让临时文件创建在目标文件所在目录，而不是 /tmp，避免 Errno 18
+    import fsspec.implementations.local as fsspec_local
+    from fsspec.compression import compr
+    import tempfile as _tempfile
+    _orig_open = fsspec_local.LocalFileOpener._open
+    def _patched_open(self):
+        if self.f is None or self.f.closed:
+            if self.autocommit or "w" not in self.mode:
+                self.f = open(self.path, mode=self.mode)
+                if self.compression:
+                    compress = compr[self.compression]
+                    self.f = compress(self.f, mode=self.mode)
+            else:
+                target_dir = os.path.dirname(self.path) or "."
+                os.makedirs(target_dir, exist_ok=True)
+                i, name = _tempfile.mkstemp(dir=target_dir)
+                os.close(i)
+                self.temp = name
+                self.f = open(name, mode=self.mode)
+            if "w" not in self.mode:
+                self.size = self.f.seek(0, 2)
+                self.f.seek(0)
+                self.f.size = self.size
+    fsspec_local.LocalFileOpener._open = _patched_open
+
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
 
     sys.path.append(os.getcwd())
@@ -201,9 +227,9 @@ if __name__ == "__main__":
         trainer_config, trainer_kwargs = trainer_setup.trainer_config, trainer_setup.trainer_kwargs
         print(f'before trainer init {trainer_config}')
         if opt.use_wandb:
-            trainer = Trainer(**trainer_config, strategy='ddp_find_unused_parameters_true', logger=wandb_logger, callbacks=trainer_kwargs["callbacks"])
+            trainer = Trainer(**trainer_config, logger=wandb_logger, callbacks=trainer_kwargs["callbacks"])
         else:
-            trainer = Trainer(**trainer_config, strategy='ddp_find_unused_parameters_true', logger=trainer_kwargs["logger"], callbacks=trainer_kwargs["callbacks"])
+            trainer = Trainer(**trainer_config, logger=trainer_kwargs["logger"], callbacks=trainer_kwargs["callbacks"])
         
         #### run training
         try:

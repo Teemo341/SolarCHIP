@@ -24,7 +24,7 @@ model:
 
     loss_config:
       epochs: 200
-      lr: 1e-2
+      lr: 1e-3
       optimizer: "AdamW"
       scheduler: "CosineAnnealingLR"
       rec_loss_type: l2
@@ -92,5 +92,6 @@ lightning:
 
   trainer:
     max_epochs: 200
-    precision: bf16
+    precision: bf16-mixed
     log_every_n_steps: 6
+    # devices: [0]

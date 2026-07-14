@@ -4,7 +4,7 @@
 # 改其它模态名只需替换下方两个字段。
 # ------------------------------------------------------------
 # 运行示例(在仓库根目录):
-#   python -m solarchip.main.train -b ./configs/solarldm/solarldm_base.yaml
+#   python -m solarchip.main.train -b ./configs/solarldm/solarldm.yaml
 # ============================================================
 
 model:
@@ -12,12 +12,12 @@ model:
   params:
     # ---- SolarCHIP custom keys ----
     first_stage_key: 'hmi'      # 要重建/生成的模态
-    cond_stage_key:  '0193'     # 条件模态(与 first 相同则视为无条件 / self-condition)
+    cond_stage_key:  '0094'     # 条件模态(与 first 相同则视为无条件 / self-condition)
 
     # ---- LDM 基础超参 ----
-    learning_rate: 1e-4
-    image_size: 16              # latent 边长 = 1024 / 2^(len(ch_mult)-1) = 1024 / 64 = 16
-    channels: 128               # latent 通道数 = AE_CNN.ddconfig.z_channels
+    learning_rate: 1e-3
+    image_size: 32              # latent 边长 = 1024 / 2^(len(ch_mult)-1) = 1024 / 32 = 32
+    channels: 32                # latent 通道数 = AE_CNN.ddconfig.z_channels
     timesteps: 1000
     beta_schedule: linear
     linear_start: 0.00085
@@ -26,7 +26,7 @@ model:
     loss_type: l2
     parameterization: eps
     monitor: val/loss_simple_ema
-    use_ema: True
+    use_ema: False
 
     # 条件注入方式:
     #   - 'concat'    把 cond latent 沿 channel 维拼到输入 — 适合
@@ -43,21 +43,21 @@ model:
       params:
         modal_list: ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']
         save_memory: True
-        # !!! 这里换成你训练好的 SolarCHIP checkpoint !!!
-        # ckpt_path: logs/CNN_AE_base_solarchip_/checkpoints/last.ckpt
+        # !!! 加载 zscore 预训练的 SolarCHIP checkpoint !!!
+        ckpt_path: logs/solarchip_CNN_AE_base_zscore_2026-07-10T18-03-45/checkpoints/last.ckpt
         base_model:
           target: solarchip.modules.CNN.AE_CNN
           params:
-            contrastive_dim: 128
+            contrastive_dim: 32
             ckpt_path: null
             ddconfig:
               double_z: False
-              z_channels: 128
+              z_channels: 32
               resolution: 1024
               in_channels: 1
               out_ch: 1
-              ch: 64
-              ch_mult: [1, 1, 1, 1, 2, 2, 2]   # 7 个阶段 -> spatial /64
+              ch: 32
+              ch_mult: [1, 1, 1, 2, 2, 2]   # 6 个阶段 -> spatial /32
               num_res_blocks: 2
               attn_resolutions: []
               use_linear_attn: False
@@ -69,29 +69,32 @@ model:
     unet_config:
       target: auxiliary.ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
-        image_size: 16          # 与上面 image_size 一致
+        image_size: 32          # 与上面 image_size 一致
         # concat 模式下输入是 [z_t, cond_z] 沿 channel 拼起来,所以 in_channels 翻倍
-        in_channels: 256        # = 128 (z_t) + 128 (cond_z)
-        out_channels: 128       # = z_channels
-        model_channels: 192
+        in_channels: 64         # = 32 (z_t) + 32 (cond_z)
+        out_channels: 32        # = z_channels
+        model_channels: 320
+        attention_resolutions: [ 4, 2, 1 ]
         num_res_blocks: 2
-        attention_resolutions: [4, 2, 1]   # 在 16/4, 16/2, 16/1 三个分辨率上加 attention
-        channel_mult: [1, 2, 4]
-        num_head_channels: 32
-        use_scale_shift_norm: True
-        resblock_updown: True
+        channel_mult: [ 1, 2, 4, 4 ]
+        num_heads: 8
+        # use_spatial_transformer: True
+        # transformer_depth: 1
+        # context_dim: 768
+        use_checkpoint: True
+        legacy: False
 
 data:
   target: data.build.DataModuleFromConfig
   params:
-    batch_size: 2
+    batch_size: 16
     num_workers: 8
     wrap: False
     train:
       target: data.dataset.SolarDataset.multimodal_dataset
       params:
         modal_list: ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']
-        log1p_scale: 1
+        enhance_type: ['log1p', 'zscore']
         load_imgs: False
         torch_augment_type:
           - 1024
@@ -105,7 +108,7 @@ data:
       target: data.dataset.SolarDataset.multimodal_dataset
       params:
         modal_list: ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']
-        log1p_scale: 1
+        enhance_type: ['log1p', 'zscore']
         load_imgs: False
         torch_augment_type:
           - 1024
@@ -121,21 +124,22 @@ lightning:
     image_logger:
       target: solarchip.utils.callback.SolarImageLogger
       params:
-        batch_frequency: 500
+        batch_frequency: 200
         max_images: 2
-        clamp: False
 
   modelcheckpoint:
     params:
       monitor: val/loss_simple_ema
+      filename: '{epoch:06}_{loss_simple_ema:.4f}'
       mode: min
       save_last: True
       save_top_k: 3
       every_n_epochs: 1
-      save_weights_only: True
+      save_weights_only: False
 
   trainer:
+    strategy: ddp
     max_epochs: 200
-    precision: bf16
+    precision: bf16-mixed
     log_every_n_steps: 10
     # devices: [0]
