@@ -136,7 +136,7 @@ lightning:
       save_last: True
       save_top_k: 3
       every_n_epochs: 1
-      save_weights_only: False
+      save_weights_only: True
 
   trainer:
     strategy: ddp

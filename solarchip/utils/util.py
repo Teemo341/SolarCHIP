@@ -158,7 +158,7 @@ class TrainerSetup:
             "target": "pytorch_lightning.callbacks.ModelCheckpoint",
             "params": {
                 "dirpath": self.ckptdir,
-                "filename": "{epoch:06}_{val_loss:.4f}",
+                "filename": "{epoch:06}",
                 "verbose": True,
                 "save_last": False,
                 'save_top_k': 3,
