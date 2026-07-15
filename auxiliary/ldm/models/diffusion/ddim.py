@@ -79,7 +79,11 @@ class DDIMSampler(object):
                ):
         if conditioning is not None:
             if isinstance(conditioning, dict):
-                cbs = conditioning[list(conditioning.keys())[0]].shape[0]
+                first_val = conditioning[list(conditioning.keys())[0]]
+                if isinstance(first_val, list):
+                    cbs = first_val[0].shape[0]
+                else:
+                    cbs = first_val.shape[0]
                 if cbs != batch_size:
                     print(f"Warning: Got {cbs} conditionings but batch-size is {batch_size}")
             else:
@@ -172,7 +176,18 @@ class DDIMSampler(object):
         else:
             x_in = torch.cat([x] * 2)
             t_in = torch.cat([t] * 2)
-            c_in = torch.cat([unconditional_conditioning, c])
+            if isinstance(c, dict):
+                c_in = {}
+                for key in c:
+                    if isinstance(c[key], list):
+                        c_in[key] = [
+                            torch.cat([unconditional_conditioning[key][i], c[key][i]], dim=0)
+                            for i in range(len(c[key]))
+                        ]
+                    else:
+                        c_in[key] = torch.cat([unconditional_conditioning[key], c[key]], dim=0)
+            else:
+                c_in = torch.cat([unconditional_conditioning, c])
             e_t_uncond, e_t = self.model.apply_model(x_in, t_in, c_in).chunk(2)
             e_t = e_t_uncond + unconditional_guidance_scale * (e_t - e_t_uncond)
 

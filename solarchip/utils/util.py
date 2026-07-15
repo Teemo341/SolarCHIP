@@ -46,8 +46,8 @@ class TrainerSetup:
 
     def init_trainer_config(self, trainer_config=None):
         if not "devices" in trainer_config:
-            if 'strategy' in trainer_config:
-                del trainer_config['strategy']
+            # if 'strategy' in trainer_config:
+            #     del trainer_config['strategy']
             trainer_config['accelerator'] = 'gpu' if torch.cuda.is_available() else 'cpu'
             trainer_config['devices'] = "auto"
         else:

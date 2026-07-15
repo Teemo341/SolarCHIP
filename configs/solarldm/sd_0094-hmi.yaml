@@ -26,13 +26,13 @@ model:
     loss_type: l2
     parameterization: eps
     monitor: val/loss_simple_ema
-    use_ema: False
+    use_ema: True
 
     # 条件注入方式:
     #   - 'concat'    把 cond latent 沿 channel 维拼到输入 — 适合
     #                 first/cond AE 输出形状完全相同的情况(同一套 ddconfig 默认就是)。
     #   - 'crossattn' 用交叉注意力,需要在 unet_config 里打开 spatial_transformer。
-    conditioning_key: concat
+    conditioning_key: crossattn
 
     # ---- 11-模态 SolarCHIP wrapper:训练 SolarLDM 前必须有可加载的 ckpt ----
     # 这里复用 configs/solarchip/CNN_AE_base.yaml 的同一份 wrapper 描述,
@@ -70,17 +70,17 @@ model:
       target: auxiliary.ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
         image_size: 32          # 与上面 image_size 一致
-        # concat 模式下输入是 [z_t, cond_z] 沿 channel 拼起来,所以 in_channels 翻倍
-        in_channels: 64         # = 32 (z_t) + 32 (cond_z)
+        # crossattn 模式下输入只有 noisy latent，不再 concat cond
+        in_channels: 32         # = z_channels
         out_channels: 32        # = z_channels
         model_channels: 320
         attention_resolutions: [ 4, 2, 1 ]
         num_res_blocks: 2
         channel_mult: [ 1, 2, 4, 4 ]
         num_heads: 8
-        # use_spatial_transformer: True
-        # transformer_depth: 1
-        # context_dim: 768
+        use_spatial_transformer: True
+        transformer_depth: 1
+        context_dim: 32
         use_checkpoint: True
         legacy: False
 

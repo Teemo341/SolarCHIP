@@ -232,6 +232,22 @@ class SolarLDM(LatentDiffusion):
         return out
 
     # ------------------------------------------------------------------
+    # 条件编码:cross-attention 模式下将 cond latent flatten 为序列
+    # ------------------------------------------------------------------
+    def get_learned_conditioning(self, c):
+        """重写父类方法，cross-attention 模式下将 [B, C, H, W] flatten 为 [B, H*W, C]。
+        
+        SpatialTransformer 的 cross-attention 需要 context 形如 (B, N, context_dim)，
+        其中 N 是序列长度。SolarCHIP 的 AE 编码器输出 latent [B, 32, 32, 32]，
+        需将 H, W 合并为序列维度。
+        """
+        c = super().get_learned_conditioning(c)
+        if self.model.conditioning_key == 'crossattn' and c.dim()==4:
+            # [B, C, H, W] -> [B, H*W, C]
+            c = c.flatten(2).transpose(1, 2)
+        return c
+
+    # ------------------------------------------------------------------
     # log_images:沿用 SolarCHIP 的 'visualization/<modal>/<kind>' 命名
     # ------------------------------------------------------------------
     @torch.no_grad()
@@ -281,7 +297,12 @@ class SolarLDM(LatentDiffusion):
         if xc is not None and isinstance(xc, torch.Tensor) and self.cond_stage_key != self.first_stage_key:
             log[f"visualization/{self.cond_stage_key}/cond_input"] = xc.detach().cpu()
             if return_latent and isinstance(c, torch.Tensor):
-                log[f"visualization/{self.cond_stage_key}/cond_latent"] = self._to_loggable_latent(c).detach().cpu()
+                # cross-attn 模式下 c 是 [B, H*W, C], reshape 回 [B, C, H, W] 以便可视化
+                cond_latent = c
+                if cond_latent.dim() == 3:
+                    hw = int(cond_latent.shape[1] ** 0.5)
+                    cond_latent = cond_latent.transpose(1, 2).reshape(c.shape[0], -1, hw, hw)
+                log[f"visualization/{self.cond_stage_key}/cond_latent"] = self._to_loggable_latent(cond_latent).detach().cpu()
 
         if sample and c is not None:
             with self.ema_scope("Plotting"):
