@@ -19,6 +19,8 @@ SolarLDM: 在 SolarCHIP 多模态编解码器之上做 Latent Diffusion 训练�
 
 import torch
 
+from pytorch_lightning.utilities.rank_zero import rank_zero_only
+
 from auxiliary.ldm.models.diffusion.ddpm import LatentDiffusion, disabled_train
 from auxiliary.ldm.modules.distributions.distributions import DiagonalGaussianDistribution
 from solarchip.utils.util import instantiate_from_config
@@ -70,6 +72,34 @@ class SolarLDM(LatentDiffusion):
                 del self._solarchip_config
             except AttributeError:
                 pass
+
+    # ------------------------------------------------------------------
+    # scale_by_std 兼容: 覆写父类的 on_train_batch_start,
+    # 因为 LatentDiffusion 的版本调用 super().get_input() 会走到
+    # DDPM.get_input(batch, key), 它假设 batch[key] 是 (B, H, W, C) 的原始图像,
+    # 而 SolarLDM 的 batch 是 {modal: tensor(B, C, H, W)} 的 dict。
+    # ------------------------------------------------------------------
+    @rank_zero_only
+    @torch.no_grad()
+    def on_train_batch_start(self, batch, batch_idx, dataloader_idx=0):
+        if (
+            self.scale_by_std
+            and self.current_epoch == 0
+            and self.global_step == 0
+            and batch_idx == 0
+            and not self.restarted_from_ckpt
+        ):
+            assert self.scale_factor == 1.0, (
+                "Don't set both scale_factor and scale_by_std"
+            )
+            print("### USING STD-RESCALING ###")
+            x = self._solar_get_raw(batch, self.first_stage_key).to(self.device)
+            encoder_posterior = self.encode_first_stage(x)
+            z = self.get_first_stage_encoding(encoder_posterior).detach()
+            del self.scale_factor
+            self.register_buffer("scale_factor", 1.0 / z.flatten().std())
+            print(f"setting self.scale_factor to {self.scale_factor}")
+            print("### USING STD-RESCALING ###")
 
     # ------------------------------------------------------------------
     # First / Cond stage:从 SolarCHIP wrapper 抽出需要的部分,其它丢弃

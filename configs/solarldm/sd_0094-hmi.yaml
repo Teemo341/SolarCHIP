@@ -27,6 +27,7 @@ model:
     parameterization: eps
     monitor: val/loss_simple_ema
     use_ema: True
+    scale_by_std: True           # 自动计算 scale_factor = 1/std(latent), 使 latent 归一化
 
     # 条件注入方式:
     #   - 'concat'    把 cond latent 沿 channel 维拼到输入 — 适合
@@ -87,7 +88,7 @@ model:
 data:
   target: data.build.DataModuleFromConfig
   params:
-    batch_size: 32
+    batch_size: 16
     num_workers: 4
     wrap: False
     train:
@@ -125,7 +126,7 @@ lightning:
       target: solarchip.utils.callback.SolarImageLogger
       params:
         log_on_batch_idx: False
-        batch_frequency: 16
+        batch_frequency: 32
         max_images: 2
 
   modelcheckpoint:
