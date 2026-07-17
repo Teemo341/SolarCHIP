@@ -1,0 +1,150 @@
+# ============================================================
+# SolarLDM Unconditional: 先训一个高质量无条件 hmi 生成模型,
+# 作为后续 ControlNet 训练的冻结 backbone。
+#
+# 关键设计:
+#   conditioning_key: None → 纯无条件扩散, UNet 结构和 ControlNet 主干一致
+#   UNet 无 spatial_transformer → 和 ctrl_0094-hmi.yaml 的 UNet 完全匹配
+#
+# 训练完后用于 Step 2:
+#   python scripts/train/init_ctrl_from_sd.py \
+#       --sd_ckpt logs/sd_hmi_uncond/checkpoints/last.ckpt \
+#       --ctrl_config configs/solarldm/ctrl_0094-hmi.yaml \
+#       --output logs/sd_hmi_uncond/checkpoints/ctrl_init.ckpt
+#
+# 然后 ctrl_0094-hmi.yaml 设 sd_locked: True 并从 ctrl_init.ckpt 加载
+# ============================================================
+
+model:
+  target: downstream.ldm.SolarLDM.SolarLDM
+  params:
+    first_stage_key: 'hmi'
+    cond_stage_key:  'hmi'      # 自条件, 实际被 conditioning_key=None 忽略
+
+    learning_rate: 5e-5
+    image_size: 32
+    channels: 32
+    timesteps: 1000
+    beta_schedule: linear
+    linear_start: 0.00085
+    linear_end: 0.0120
+    log_every_t: 100
+    loss_type: l2
+    parameterization: eps
+    monitor: val/loss_simple_ema
+    use_ema: True
+    scale_by_std: False
+
+    # ---- LR scheduler ----
+    scheduler_config:
+      target: auxiliary.ldm.lr_scheduler.LambdaWarmUpCosineScheduler
+      params:
+        warm_up_steps: 770
+        lr_start: 0.01
+        lr_min: 0.1
+        lr_max: 1.0
+        max_decay_steps: 15400
+
+    concat_mode: False
+    cond_stage_config: "__is_unconditional__"       # 无条件训练 → UNet 纯去噪器, 无 spatial_transformer
+
+    # ---- AE wrapper (同一份预训练 AE) ----
+    solarchip_config:
+      target: solarchip.SolarCHIP.solarchip_base
+      params:
+        modal_list: ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']
+        save_memory: True
+        ckpt_path: logs/solarchip_CNN_AE_base_zscore_2026-07-10T18-03-45/checkpoints/last.ckpt
+        base_model:
+          target: solarchip.modules.CNN.AE_CNN
+          params:
+            contrastive_dim: 32
+            ckpt_path: null
+            ddconfig:
+              double_z: False
+              z_channels: 32
+              resolution: 1024
+              in_channels: 1
+              out_ch: 1
+              ch: 32
+              ch_mult: [1, 1, 1, 2, 2, 2]
+              num_res_blocks: 2
+              attn_resolutions: []
+              use_linear_attn: False
+              dropout: 0.0
+        loss_config: null
+
+    # ---- UNet (必须和 ctrl_0094-hmi.yaml 的 unet_config 完全一致) ----
+    unet_config:
+      target: auxiliary.ldm.modules.diffusionmodules.openaimodel.UNetModel
+      params:
+        image_size: 32
+        in_channels: 32
+        out_channels: 32
+        model_channels: 320
+        attention_resolutions: [4, 2, 1]
+        num_res_blocks: 2
+        channel_mult: [1, 2, 4, 4]
+        num_heads: 8
+        use_checkpoint: True
+        legacy: False
+
+data:
+  target: data.build.DataModuleFromConfig
+  params:
+    batch_size: 16
+    num_workers: 4
+    wrap: False
+    train:
+      target: data.dataset.SolarDataset.multimodal_dataset
+      params:
+        modal_list: ['hmi']
+        enhance_type: ['log1p', 'zscore']
+        load_imgs: False
+        torch_augment_type:
+          - 1024
+          - 0.5
+          - 360
+        time_interval:
+          - 0
+          - 5000
+        time_step: 1
+    validation:
+      target: data.dataset.SolarDataset.multimodal_dataset
+      params:
+        modal_list: ['hmi']
+        enhance_type: ['log1p', 'zscore']
+        load_imgs: False
+        torch_augment_type:
+          - 1024
+          - 0.5
+          - 360
+        time_interval:
+          - 5000
+          - 5400
+        time_step: 1
+
+lightning:
+  callbacks:
+    image_logger:
+      target: solarchip.utils.callback.SolarImageLogger
+      params:
+        log_on_batch_idx: False
+        batch_frequency: 308
+        max_images: 2
+
+  modelcheckpoint:
+    params:
+      monitor: val/loss_simple_ema
+      filename: '{epoch:06}'
+      mode: min
+      save_last: True
+      save_top_k: 3
+      every_n_epochs: 1
+      save_weights_only: True
+
+  trainer:
+    strategy: ddp
+    max_epochs: 200
+    precision: bf16-mixed
+    log_every_n_steps: 4

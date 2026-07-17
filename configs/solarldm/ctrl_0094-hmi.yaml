@@ -20,7 +20,7 @@ model:
     cond_stage_key:  '0094'     # 提供控制信号的模态
 
     # ---- LDM 基础超参 (与 sd_0094-hmi.yaml 保持一致) ----
-    learning_rate: 1e-4
+    learning_rate: 5e-5
     image_size: 32              # latent 边长 = 1024 / 32
     channels: 32                # latent 通道数 = AE_CNN.ddconfig.z_channels
     timesteps: 1000
@@ -32,7 +32,17 @@ model:
     parameterization: eps
     monitor: val/loss_simple_ema
     use_ema: True               # ControlNet 模式下 EMA 有助于稳定采样质量
-    scale_by_std: True           # 自动计算 scale_factor = 1/std(latent), 使 latent 归一化
+    scale_by_std: False           # 自动计算 scale_factor = 1/std(latent), 使 latent 归一化
+
+    # ---- LR scheduler: warmup + cosine decay ----
+    scheduler_config:
+      target: auxiliary.ldm.lr_scheduler.LambdaWarmUpCosineScheduler
+      params:
+        warm_up_steps: 1000        # 前 1000 步线性 warmup
+        lr_start: 0.01             # warmup 起始 multiplier (base_lr × 0.01 = 1e-6)
+        lr_min: 0.1                # 最终 multiplier (base_lr × 0.1 = 1e-5)
+        lr_max: 1.0                # warmup 峰值 multiplier (base_lr × 1.0 = 1e-4)
+        max_decay_steps: 16000     # 余弦衰减的总步数，按你的总训练步数调整
 
     # ---- ControlNet 相关 ----
     only_mid_control: False     # False: 全部 13 层 zero-conv 注入; True: 仅 middle block (消融用)
@@ -119,7 +129,7 @@ data:
         time_interval:
           - 0
           - 5000
-        time_step: 10
+        time_step: 1
     validation:
       target: data.dataset.SolarDataset.multimodal_dataset
       params:
@@ -133,7 +143,7 @@ data:
         time_interval:
           - 5000
           - 5400
-        time_step: 10
+        time_step: 1
 
 lightning:
   callbacks:
@@ -141,7 +151,7 @@ lightning:
       target: solarchip.utils.callback.SolarImageLogger
       params:
         log_on_batch_idx: False
-        batch_frequency: 32
+        batch_frequency: 320
         max_images: 2
 
   modelcheckpoint:

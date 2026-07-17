@@ -27,7 +27,17 @@ model:
     parameterization: eps
     monitor: val/loss_simple_ema
     use_ema: True
-    scale_by_std: True           # 自动计算 scale_factor = 1/std(latent), 使 latent 归一化
+    scale_by_std: False           # 自动计算 scale_factor = 1/std(latent), 使 latent 归一化
+
+    # ---- LR scheduler: warmup + cosine decay ----
+    scheduler_config:
+      target: auxiliary.ldm.lr_scheduler.LambdaWarmUpCosineScheduler
+      params:
+        warm_up_steps: 1000        # 前 1000 步线性 warmup
+        lr_start: 0.01             # warmup 起始 multiplier (base_lr × 0.01)
+        lr_min: 0.1                # 最终 multiplier (base_lr × 0.1)
+        lr_max: 1.0                # warmup 峰值 multiplier (base_lr × 1.0)
+        max_decay_steps: 30000     # 余弦衰减的总步数，按你的总训练步数调整
 
     # 条件注入方式:
     #   - 'concat'    把 cond latent 沿 channel 维拼到输入 — 适合

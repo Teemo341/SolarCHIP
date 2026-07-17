@@ -225,6 +225,8 @@ class SolarControl(SolarLDM):
     # 优化器:UNet + ControlNet 联合训练(SolarCHIP AE 仍然冻结)
     # ------------------------------------------------------------------
     def configure_optimizers(self):
+        from torch.optim.lr_scheduler import LambdaLR
+
         lr = self.learning_rate
         params = list(self.control_model.parameters())
         if not self.sd_locked:
@@ -239,6 +241,21 @@ class SolarControl(SolarLDM):
             params.append(self.logvar)
 
         opt = torch.optim.AdamW(params, lr=lr)
+
+        if self.use_scheduler:
+            assert "target" in self.scheduler_config, (
+                "scheduler_config 需要 target 字段"
+            )
+            scheduler = instantiate_from_config(self.scheduler_config)
+            print("Setting up LambdaLR scheduler...")
+            scheduler = [
+                {
+                    "scheduler": LambdaLR(opt, lr_lambda=scheduler.schedule),
+                    "interval": "step",
+                    "frequency": 1,
+                }
+            ]
+            return [opt], scheduler
         return opt
 
     # ------------------------------------------------------------------

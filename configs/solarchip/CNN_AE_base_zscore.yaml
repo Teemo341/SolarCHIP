@@ -24,7 +24,7 @@ model:
 
     loss_config:
       epochs: 200
-      lr: 1e-3
+      lr: 1e-4
       optimizer: "AdamW"
       scheduler: "CosineAnnealingLR"
       rec_loss_type: l2
