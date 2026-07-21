@@ -27,7 +27,9 @@ model:
     parameterization: eps
     monitor: val/loss_simple_ema
     use_ema: True
-    scale_by_std: False           # 自动计算 scale_factor = 1/std(latent), 使 latent 归一化
+    scale_by_std: False               # 旧的单标量 normalization，保持关闭
+    normalize_latent_per_channel: True
+    latent_stats_eps: 1e-6            # 完整训练集上分别统计 HMI/0094；随 checkpoint 保存
 
     # ---- LR scheduler: warmup + cosine decay ----
     scheduler_config:
@@ -151,6 +153,7 @@ lightning:
 
   trainer:
     strategy: ddp
+    num_sanity_val_steps: 0      # latent stats 在 on_train_start 完整预计算后再做验证
     max_epochs: 200
     precision: bf16-mixed
     log_every_n_steps: 4

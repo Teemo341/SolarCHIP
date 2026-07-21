@@ -18,8 +18,7 @@ SolarLDM: 在 SolarCHIP 多模态编解码器之上做 Latent Diffusion 训练�
 """
 
 import torch
-
-from pytorch_lightning.utilities.rank_zero import rank_zero_only
+import torch.distributed as dist
 
 from auxiliary.ldm.models.diffusion.ddpm import LatentDiffusion, disabled_train
 from auxiliary.ldm.modules.distributions.distributions import DiagonalGaussianDistribution
@@ -43,6 +42,12 @@ class SolarLDM(LatentDiffusion):
         first_stage_key: str,
         cond_stage_key: str,
         learning_rate: float = 1e-4,
+        normalize_latent_per_channel: bool = False,
+        latent_stats_eps: float = 1e-6,
+        latent_mean=None,
+        latent_std=None,
+        cond_latent_mean=None,
+        cond_latent_std=None,
         *args,
         **kwargs,
     ):
@@ -56,6 +61,23 @@ class SolarLDM(LatentDiffusion):
         self._solar_is_unconditional = (
             requested_cond_stage_config == UNCONDITIONAL_CONFIG
         )
+        self.normalize_latent_per_channel = bool(normalize_latent_per_channel)
+        self.latent_stats_eps = float(latent_stats_eps)
+        if self.latent_stats_eps <= 0:
+            raise ValueError("latent_stats_eps 必须大于 0")
+        if self.normalize_latent_per_channel:
+            if kwargs.get("scale_by_std", False):
+                raise ValueError(
+                    "normalize_latent_per_channel 与旧的 scale_by_std 不能同时启用"
+                )
+            if float(kwargs.get("scale_factor", 1.0)) != 1.0:
+                raise ValueError(
+                    "逐通道 latent normalization 要求 scale_factor=1.0"
+                )
+        self._latent_mean_config = latent_mean
+        self._latent_std_config = latent_std
+        self._cond_latent_mean_config = cond_latent_mean
+        self._cond_latent_std_config = cond_latent_std
         parent_cond_stage_config = (
             UNCONDITIONAL_CONFIG
             if self._solar_is_unconditional
@@ -86,20 +108,278 @@ class SolarLDM(LatentDiffusion):
                 pass
 
     # ------------------------------------------------------------------
-    # scale_by_std 兼容: 覆写父类的 on_train_batch_start,
-    # 因为 LatentDiffusion 的版本调用 super().get_input() 会走到
-    # DDPM.get_input(batch, key), 它假设 batch[key] 是 (B, H, W, C) 的原始图像,
-    # 而 SolarLDM 的 batch 是 {modal: tensor(B, C, H, W)} 的 dict。
+    # Latent normalization
     # ------------------------------------------------------------------
-    @rank_zero_only
+    def _register_latent_stats(self, prefix, channels, mean_config, std_config):
+        """注册可随 checkpoint 保存的逐通道统计量。"""
+        if not self.normalize_latent_per_channel:
+            return
+
+        mean_name = f"{prefix}latent_mean"
+        std_name = f"{prefix}latent_std"
+        initialized_name = f"{prefix}latent_stats_initialized"
+        if hasattr(self, mean_name):
+            return
+
+        if (mean_config is None) != (std_config is None):
+            raise ValueError(
+                f"{mean_name} 与 {std_name} 必须同时提供或同时省略"
+            )
+
+        initialized = mean_config is not None
+        if initialized:
+            mean = torch.as_tensor(mean_config, dtype=torch.float32).flatten()
+            std = torch.as_tensor(std_config, dtype=torch.float32).flatten()
+            if mean.numel() != channels or std.numel() != channels:
+                raise ValueError(
+                    f"{prefix or 'first_'}latent stats 应有 {channels} 个通道，"
+                    f"实际 mean={mean.numel()}, std={std.numel()}"
+                )
+            if not torch.isfinite(mean).all() or not torch.isfinite(std).all():
+                raise ValueError("latent mean/std 必须全部为有限值")
+            if (std <= self.latent_stats_eps).any():
+                raise ValueError(
+                    f"latent std 必须全部大于 latent_stats_eps={self.latent_stats_eps}"
+                )
+        else:
+            mean = torch.zeros(channels, dtype=torch.float32)
+            std = torch.ones(channels, dtype=torch.float32)
+
+        self.register_buffer(mean_name, mean.view(1, channels, 1, 1))
+        self.register_buffer(std_name, std.view(1, channels, 1, 1))
+        self.register_buffer(
+            initialized_name, torch.tensor(initialized, dtype=torch.bool)
+        )
+
+    @staticmethod
+    def _posterior_to_latent(encoder_posterior, sample=True):
+        if isinstance(encoder_posterior, DiagonalGaussianDistribution):
+            return encoder_posterior.sample() if sample else encoder_posterior.mode()
+        if isinstance(encoder_posterior, torch.Tensor):
+            return encoder_posterior
+        raise NotImplementedError(
+            f"encoder_posterior of type '{type(encoder_posterior)}' not yet implemented"
+        )
+
+    def _uses_first_stats_for_condition(self):
+        return (
+            self.cond_stage_model is not None
+            and self.cond_stage_model is self.first_stage_model
+        )
+
+    def _latent_stats_prefix(self, condition=False):
+        if condition and not self._uses_first_stats_for_condition():
+            return "cond_"
+        return ""
+
+    def _allow_uninitialized_stats(self):
+        trainer = getattr(self, "_trainer", None)
+        return trainer is not None and getattr(trainer, "sanity_checking", False)
+
+    def _normalize_latent(self, z, condition=False):
+        if not self.normalize_latent_per_channel:
+            return z
+        if not isinstance(z, torch.Tensor) or z.dim() != 4:
+            stage = "condition" if condition else "first-stage"
+            shape = getattr(z, "shape", None)
+            raise ValueError(
+                f"{stage} 逐通道 latent normalization 期望 BCHW tensor，"
+                f"实际 type={type(z)}, shape={shape}"
+            )
+        prefix = self._latent_stats_prefix(condition)
+        initialized = getattr(self, f"{prefix}latent_stats_initialized")
+        if not bool(initialized.item()):
+            if self._allow_uninitialized_stats():
+                return z
+            stage = "condition" if condition else "first-stage"
+            raise RuntimeError(
+                f"{stage} 逐通道 latent stats 尚未初始化；训练时应先完成 "
+                "on_train_start 的完整训练集预计算，推理时必须加载包含统计量的 checkpoint"
+            )
+        mean = getattr(self, f"{prefix}latent_mean").to(dtype=z.dtype)
+        std = getattr(self, f"{prefix}latent_std").to(dtype=z.dtype)
+        if z.shape[1] != mean.shape[1]:
+            raise ValueError(
+                f"latent 通道数不匹配：tensor={z.shape[1]}, stats={mean.shape[1]}"
+            )
+        return (z - mean) / std
+
+    def _denormalize_latent(self, z):
+        if not self.normalize_latent_per_channel:
+            return z
+        if not isinstance(z, torch.Tensor) or z.dim() != 4:
+            shape = getattr(z, "shape", None)
+            raise ValueError(
+                "first-stage latent denormalization 期望 BCHW tensor，"
+                f"实际 type={type(z)}, shape={shape}"
+            )
+        initialized = self.latent_stats_initialized
+        if not bool(initialized.item()):
+            if self._allow_uninitialized_stats():
+                return z
+            raise RuntimeError(
+                "first-stage 逐通道 latent stats 尚未初始化，无法安全解码"
+            )
+        mean = self.latent_mean.to(dtype=z.dtype)
+        std = self.latent_std.to(dtype=z.dtype)
+        if z.shape[1] != mean.shape[1]:
+            raise ValueError(
+                f"latent 通道数不匹配：tensor={z.shape[1]}, stats={mean.shape[1]}"
+            )
+        return z * std + mean
+
+    def _new_channel_moments(self, channels, device):
+        return {
+            "sum": torch.zeros(channels, dtype=torch.float64, device=device),
+            "sum_sq": torch.zeros(channels, dtype=torch.float64, device=device),
+            "count": torch.zeros((), dtype=torch.float64, device=device),
+        }
+
+    def _accumulate_channel_moments(self, moments, z):
+        if z.dim() != 4:
+            raise ValueError(
+                f"逐通道 latent normalization 期望 BCHW tensor，实际 shape={tuple(z.shape)}"
+            )
+        if z.shape[1] != moments["sum"].numel():
+            raise ValueError(
+                f"latent 通道数不匹配：tensor={z.shape[1]}, "
+                f"stats={moments['sum'].numel()}"
+            )
+        values = z.detach().to(dtype=torch.float64)
+        moments["sum"].add_(values.sum(dim=(0, 2, 3)))
+        moments["sum_sq"].add_(values.square().sum(dim=(0, 2, 3)))
+        moments["count"].add_(
+            torch.tensor(
+                values.shape[0] * values.shape[2] * values.shape[3],
+                dtype=torch.float64,
+                device=values.device,
+            )
+        )
+
+    def _finalize_global_channel_moments(self, moments):
+        if dist.is_available() and dist.is_initialized():
+            for value in moments.values():
+                dist.all_reduce(value, op=dist.ReduceOp.SUM)
+        if moments["count"].item() == 0:
+            raise RuntimeError("训练集为空，无法预计算 latent stats")
+        mean = moments["sum"] / moments["count"]
+        variance = moments["sum_sq"] / moments["count"] - mean.square()
+        std = variance.clamp_min(self.latent_stats_eps ** 2).sqrt()
+        return mean.float(), std.float(), int(moments["count"].item())
+
+    def _store_latent_stats(self, mean, std, condition=False):
+        prefix = self._latent_stats_prefix(condition)
+        getattr(self, f"{prefix}latent_mean").copy_(
+            mean.view(1, -1, 1, 1)
+        )
+        getattr(self, f"{prefix}latent_std").copy_(
+            std.view(1, -1, 1, 1)
+        )
+        getattr(self, f"{prefix}latent_stats_initialized").fill_(True)
+
+    @torch.no_grad()
+    def initialize_latent_stats_from_dataloader(self, dataloader):
+        """遍历完整训练 dataloader，流式预计算目标/条件逐通道统计量。"""
+        need_first = not bool(self.latent_stats_initialized.item())
+        has_separate_condition = (
+            self.cond_stage_model is not None
+            and not self._uses_first_stats_for_condition()
+        )
+        need_condition = (
+            has_separate_condition
+            and not bool(self.cond_latent_stats_initialized.item())
+        )
+        if not need_first and not need_condition:
+            return
+
+        first_moments = None
+        cond_moments = None
+        num_batches = 0
+        for batch in dataloader:
+            num_batches += 1
+            if need_first:
+                x = self._solar_get_raw(batch, self.first_stage_key).to(self.device)
+                raw_z = self._posterior_to_latent(
+                    self.encode_first_stage(x), sample=True
+                )
+                if first_moments is None:
+                    first_moments = self._new_channel_moments(
+                        raw_z.shape[1], raw_z.device
+                    )
+                self._accumulate_channel_moments(first_moments, raw_z)
+                del x, raw_z
+
+            if need_condition:
+                xc = self._solar_get_raw(batch, self.cond_stage_key).to(self.device)
+                raw_c = LatentDiffusion.get_learned_conditioning(self, xc)
+                if cond_moments is None:
+                    cond_moments = self._new_channel_moments(
+                        raw_c.shape[1], raw_c.device
+                    )
+                self._accumulate_channel_moments(cond_moments, raw_c)
+                del xc, raw_c
+
+            if num_batches % 100 == 0 and self._is_global_zero():
+                print(
+                    f"[SolarLDM] latent stats precompute: {num_batches} batches"
+                )
+
+        initialized = []
+        if need_first:
+            if first_moments is None:
+                raise RuntimeError(
+                    "训练 dataloader 未产生 batch，无法统计 first-stage latent"
+                )
+            mean, std, count = self._finalize_global_channel_moments(first_moments)
+            self._store_latent_stats(mean, std)
+            initialized.append(("first-stage", mean, std, count))
+        if need_condition:
+            if cond_moments is None:
+                raise RuntimeError(
+                    "训练 dataloader 未产生 batch，无法统计 condition latent"
+                )
+            mean, std, count = self._finalize_global_channel_moments(cond_moments)
+            self._store_latent_stats(mean, std, condition=True)
+            initialized.append(("condition", mean, std, count))
+
+        if self._is_global_zero():
+            for stage, mean, std, count in initialized:
+                print(
+                    f"[SolarLDM] initialized {stage} full-train-set "
+                    f"per-channel latent stats ({count} values/channel): "
+                    f"mean=[{mean.min().item():.6g}, {mean.max().item():.6g}], "
+                    f"std=[{std.min().item():.6g}, {std.max().item():.6g}]"
+                )
+
+    @staticmethod
+    def _is_global_zero():
+        return (
+            not (dist.is_available() and dist.is_initialized())
+            or dist.get_rank() == 0
+        )
+
+    @torch.no_grad()
+    def on_train_start(self):
+        super().on_train_start()
+        if self.normalize_latent_per_channel:
+            self.initialize_latent_stats_from_dataloader(
+                self.trainer.train_dataloader
+            )
+
     @torch.no_grad()
     def on_train_batch_start(self, batch, batch_idx, dataloader_idx=0):
+        if self.normalize_latent_per_channel:
+            return
+
+        # 旧的全局标量 scale_by_std 兼容路径。SolarLDM 的 batch 已经是
+        # BCHW，不能调用父类假设 BHWC 的 get_input。
         if (
             self.scale_by_std
             and self.current_epoch == 0
             and self.global_step == 0
             and batch_idx == 0
             and not self.restarted_from_ckpt
+            and self._is_global_zero()
         ):
             assert self.scale_factor == 1.0, (
                 "Don't set both scale_factor and scale_by_std"
@@ -107,7 +387,7 @@ class SolarLDM(LatentDiffusion):
             print("### USING STD-RESCALING ###")
             x = self._solar_get_raw(batch, self.first_stage_key).to(self.device)
             encoder_posterior = self.encode_first_stage(x)
-            z = self.get_first_stage_encoding(encoder_posterior).detach()
+            z = self._posterior_to_latent(encoder_posterior).detach()
             del self.scale_factor
             self.register_buffer("scale_factor", 1.0 / z.flatten().std())
             print(f"setting self.scale_factor to {self.scale_factor}")
@@ -154,6 +434,22 @@ class SolarLDM(LatentDiffusion):
             cond_model = first_model
         else:
             cond_model = wrapper.get_model(self.cond_stage_key)
+
+        first_channels = int(getattr(first_model, "feature_dim", self.channels))
+        self._register_latent_stats(
+            "",
+            first_channels,
+            self._latent_mean_config,
+            self._latent_std_config,
+        )
+        if cond_model is not None and cond_model is not first_model:
+            cond_channels = int(getattr(cond_model, "feature_dim", self.channels))
+            self._register_latent_stats(
+                "cond_",
+                cond_channels,
+                self._cond_latent_mean_config,
+                self._cond_latent_std_config,
+            )
 
         # 把需要保留的 AE_CNN 从 wrapper 中摘出来,避免 wrapper 被 GC 时连带它们
         keep_ids = {id(first_model)}
@@ -240,6 +536,12 @@ class SolarLDM(LatentDiffusion):
             x = x.unsqueeze(1)
         return x.to(memory_format=torch.contiguous_format).float()
 
+    def get_first_stage_encoding(self, encoder_posterior):
+        if not self.normalize_latent_per_channel:
+            return super().get_first_stage_encoding(encoder_posterior)
+        z = self._posterior_to_latent(encoder_posterior, sample=True)
+        return self._normalize_latent(z)
+
     def get_input(
         self,
         batch,
@@ -297,10 +599,35 @@ class SolarLDM(LatentDiffusion):
         需将 H, W 合并为序列维度。
         """
         c = super().get_learned_conditioning(c)
+        if self.normalize_latent_per_channel:
+            c = self._normalize_latent(c, condition=True)
         if self.model.conditioning_key == 'crossattn' and c.dim()==4:
             # [B, C, H, W] -> [B, H*W, C]
             c = c.flatten(2).transpose(1, 2)
         return c
+
+    @torch.no_grad()
+    def decode_first_stage(
+        self, z, predict_cids=False, force_not_quantize=False
+    ):
+        if self.normalize_latent_per_channel:
+            z = self._denormalize_latent(z)
+        return super().decode_first_stage(
+            z,
+            predict_cids=predict_cids,
+            force_not_quantize=force_not_quantize,
+        )
+
+    def differentiable_decode_first_stage(
+        self, z, predict_cids=False, force_not_quantize=False
+    ):
+        if self.normalize_latent_per_channel:
+            z = self._denormalize_latent(z)
+        return super().differentiable_decode_first_stage(
+            z,
+            predict_cids=predict_cids,
+            force_not_quantize=force_not_quantize,
+        )
 
     # ------------------------------------------------------------------
     # log_images:沿用 SolarCHIP 的 'visualization/<modal>/<kind>' 命名
