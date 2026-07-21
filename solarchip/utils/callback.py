@@ -156,25 +156,37 @@ class GlobalLoggingCallback(Callback):
 
 class SolarImageLogger(Callback):
     # see original https://github.com/CompVis/stable-diffusion/blob/main/main.py
-    def __init__(self, batch_frequency, max_images, clamp=False, increase_log_steps=True,
+    def __init__(self, batch_frequency=None, max_images=4, clamp=False, increase_log_steps=True,
                  rescale=True, disabled=False, log_on_batch_idx=False, log_first_step=False,
-                 log_images_kwargs=None):
+                 log_images_kwargs=None, every_n_train_epochs=None):
         super().__init__()
+        if batch_frequency is None and every_n_train_epochs is None:
+            raise ValueError("Set either batch_frequency or every_n_train_epochs for SolarImageLogger.")
+        if batch_frequency is not None and batch_frequency <= 0:
+            raise ValueError("batch_frequency must be a positive integer.")
+        if every_n_train_epochs is not None and every_n_train_epochs <= 0:
+            raise ValueError("every_n_train_epochs must be a positive integer.")
+
         self.rescale = rescale
         self.batch_freq = batch_frequency
+        self.every_n_train_epochs = every_n_train_epochs
         self.max_images = max_images
         self.logger_log_images = {
             pl.loggers.tensorboard.TensorBoardLogger: self._log_images_tensorboard
         }
-        self.log_steps = [1 * n for n in range(int(np.log2(self.batch_freq)) + 1)]
+        self.log_steps = (
+            [1 * n for n in range(int(np.log2(self.batch_freq)) + 1)]
+            if self.batch_freq is not None else []
+        )
         # print(f"self.log_steps: {self.log_steps}")
-        if not increase_log_steps:
+        if not increase_log_steps and self.batch_freq is not None:
             self.log_steps = [self.batch_freq]
         self.clamp = clamp
         self.disabled = disabled
         self.log_on_batch_idx = log_on_batch_idx
         self.log_images_kwargs = log_images_kwargs if log_images_kwargs else {}
         self.log_first_step = log_first_step
+        self._last_logged_epoch = {"train": None, "val": None}
 
     def get_cmap_and_limits(self, inputs):
         vmin = np.min(inputs)
@@ -260,13 +272,16 @@ class SolarImageLogger(Callback):
     def log_local(self, save_dir, split, images, batch_idx, pl_module):
         self._log_images(pl_module, images, batch_idx, split, save_dir=save_dir)
 
-    def log_img(self, pl_module, batch, batch_idx, split="train"):
+    def log_img(self, pl_module, batch, batch_idx, split="train", force=False):
         # print('begin log_img')
         # print(f'batch_idx: {batch_idx}')
         check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
         # print(f"check_idx {check_idx}")
         # if (self.check_frequency(check_idx) and  batch_idx % self.batch_freq == 0 and
-        if (check_idx % self.batch_freq == 0 and
+        frequency_due = force or (
+            self.batch_freq is not None and check_idx % self.batch_freq == 0
+        )
+        if (frequency_due and
                 hasattr(pl_module, "log_images") and
                 callable(pl_module.log_images) and
                 self.max_images > 0):
@@ -296,6 +311,8 @@ class SolarImageLogger(Callback):
                 pl_module.train()
 
     def check_frequency(self, check_idx):
+        if self.batch_freq is None:
+            return False
         if ((check_idx % self.batch_freq) == 0 or (check_idx in self.log_steps)) and (
                 check_idx > 0 or self.log_first_step):
             try:
@@ -306,11 +323,36 @@ class SolarImageLogger(Callback):
             return True
         return False
 
+    def _is_epoch_log_due(self, pl_module, batch_idx, split):
+        """Return True once per split on every configured one-based epoch."""
+        if self.every_n_train_epochs is None or batch_idx != 0:
+            return False
+
+        epoch = int(pl_module.current_epoch)
+        epoch_number = epoch + 1
+        return (
+            epoch_number % self.every_n_train_epochs == 0
+            and self._last_logged_epoch[split] != epoch
+        )
+
+    def _log_epoch_image(self, pl_module, batch, batch_idx, split):
+        if not self._is_epoch_log_due(pl_module, batch_idx, split):
+            return
+
+        self.log_img(pl_module, batch, batch_idx, split=split, force=True)
+        self._last_logged_epoch[split] = int(pl_module.current_epoch)
+
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if not self.disabled and (pl_module.global_step > 0 or self.log_first_step):
-            self.log_img(pl_module, batch, batch_idx, split="train")
+            if self.every_n_train_epochs is not None:
+                self._log_epoch_image(pl_module, batch, batch_idx, split="train")
+            else:
+                self.log_img(pl_module, batch, batch_idx, split="train")
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        if not self.disabled and (pl_module.global_step > 0 or self.log_first_step):
-            self.log_img(pl_module, batch, batch_idx, split="val")
-
+        if (not self.disabled and not trainer.sanity_checking
+                and (pl_module.global_step > 0 or self.log_first_step)):
+            if self.every_n_train_epochs is not None:
+                self._log_epoch_image(pl_module, batch, batch_idx, split="val")
+            else:
+                self.log_img(pl_module, batch, batch_idx, split="val")

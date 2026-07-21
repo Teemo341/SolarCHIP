@@ -128,8 +128,13 @@ lightning:
       target: solarchip.utils.callback.SolarImageLogger
       params:
         log_on_batch_idx: False
-        batch_frequency: 308
+        # 第 N、2N、3N... 个 train epoch 各绘制一次 train/validation 图像。
+        every_n_train_epochs: 4
         max_images: 2
+        log_images_kwargs:
+          # ddim_steps: 100
+          # ddim_eta: 0.0
+          ddim_steps: null
 
   modelcheckpoint:
     params:
