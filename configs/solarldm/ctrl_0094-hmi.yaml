@@ -6,10 +6,11 @@
 #   1. cond 不再沿 channel 拼到 z_t, 而是通过 ControlNet 分支逐层注入 skip 连接
 #   2. 主 UNet in_channels 从 64 降回 32 (不再翻倍)
 #   3. 额外增加 ControlNet 分支 (~1× UNet encoder 参数量)
-#   4. 开启 EMA + hint dropout, 推理时可做 CFG
+#   4. 开启 hint dropout, 推理时可做 CFG
 #
 # 运行示例:
-#   python -m solarchip.main.train -b ./configs/solarldm/sd_0094-hmi_controlnet.yaml
+#   python -m solarchip.main.train -b ./configs/solarldm/ctrl_0094-hmi.yaml \
+#       model.params.sd_backbone_ckpt=logs/<hmi-uncond-run>/checkpoints/last.ckpt
 # ============================================================
 
 model:
@@ -30,8 +31,8 @@ model:
     log_every_t: 100
     loss_type: l2
     parameterization: eps
-    monitor: val/loss_simple_ema
-    use_ema: True               # ControlNet 模式下 EMA 有助于稳定采样质量
+    monitor: val/loss_simple
+    use_ema: False              # 主 UNet 已冻结；DDPM 的 EMA 只跟踪主 UNet，必须关闭
     scale_by_std: False               # 旧的单标量 normalization，保持关闭
     normalize_latent_per_channel: True
     latent_stats_eps: 1e-6            # 完整训练集上分别统计 HMI/0094；随 checkpoint 保存
@@ -48,6 +49,10 @@ model:
 
     # ---- ControlNet 相关 ----
     only_mid_control: False     # False: 全部 13 层 zero-conv 注入; True: 仅 middle block (消融用)
+    # 训练时必须通过 CLI 覆盖为新训练的 HMI unconditional checkpoint 路径：
+    # model.params.sd_backbone_ckpt=logs/<hmi-uncond-run>/checkpoints/last.ckpt
+    sd_backbone_ckpt: null
+    sd_backbone_use_ema: True   # 使用源 SD checkpoint 的 EMA 权重初始化
     sd_locked: True             # True: 完整冻结预训练主 UNet，只训练 ControlNet
     cond_drop_prob: 0.1         # 训练时 10% 概率把 hint 置零, 推理时可做 CFG
 
@@ -158,7 +163,7 @@ lightning:
 
   modelcheckpoint:
     params:
-      monitor: val/loss_simple_ema
+      monitor: val/loss_simple
       filename: '{epoch:06}'
       mode: min 
       save_last: True

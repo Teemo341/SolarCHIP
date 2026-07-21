@@ -9,6 +9,7 @@ from downstream.ldm.SolarControl import SolarControl
 class TinyControlledUNet(nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
+        self.time_embed = nn.Sequential(nn.Linear(2, 2))
         self.input_blocks = nn.ModuleList([nn.Linear(2, 2)])
         self.middle_block = nn.Linear(2, 2)
         self.output_blocks = nn.ModuleList([nn.Linear(2, 2)])
@@ -25,10 +26,15 @@ class TinyControlledUNet(nn.Module):
 class TinyControlNet(nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
+        self.time_embed = nn.Sequential(nn.Linear(2, 2))
         self.input_blocks = nn.ModuleList([nn.Linear(2, 2)])
         self.zero_convs = nn.ModuleList([nn.Linear(2, 2)])
         self.middle_block = nn.Linear(2, 2)
         self.middle_block_out = nn.Linear(2, 2)
+        self.input_hint_block = nn.Sequential(
+            nn.Linear(2, 2),
+            nn.Linear(2, 2),
+        )
 
     def forward(self, x, hint, timesteps=None, context=None, **kwargs):
         control_gain = 1.0 + sum(
@@ -38,8 +44,11 @@ class TinyControlNet(nn.Module):
         return [residual, residual]
 
 
-def build_control(sd_locked):
-    return SolarControl(
+def build_control(sd_locked, **model_kwargs):
+    constructor_locked = (
+        sd_locked and model_kwargs.get("sd_backbone_ckpt") is not None
+    )
+    kwargs = dict(
         control_stage_config={
             "target": "tests.test_solarcontrol_optimizer.TinyControlNet",
             "params": {},
@@ -61,8 +70,16 @@ def build_control(sd_locked):
         linear_start=1.0e-4,
         linear_end=2.0e-2,
         use_ema=False,
-        sd_locked=sd_locked,
+        sd_locked=constructor_locked,
     )
+    kwargs.update(model_kwargs)
+    model = SolarControl(**kwargs)
+    if sd_locked and not constructor_locked:
+        # Optimizer unit tests isolate the locking mechanism. Direct locked
+        # construction is covered with a real temporary SD checkpoint below.
+        model.sd_locked = True
+        model._set_sd_backbone_trainable(False)
+    return model
 
 
 def optimizer_parameter_ids(optimizer):
@@ -129,7 +146,9 @@ class SolarControlOptimizerTest(unittest.TestCase):
         self.assertTrue(
             any(
                 not torch.equal(before, after)
-                for before, after in zip(control_before, model.control_model.parameters())
+                for before, after in zip(
+                    control_before, model.control_model.parameters()
+                )
             )
         )
 

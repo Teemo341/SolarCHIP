@@ -6,13 +6,8 @@
 #   conditioning_key: None → 纯无条件扩散, UNet 结构和 ControlNet 主干一致
 #   UNet 无 spatial_transformer → 和 ctrl_0094-hmi.yaml 的 UNet 完全匹配
 #
-# 训练完后用于 Step 2:
-#   python scripts/train/init_ctrl_from_sd.py \
-#       --sd_ckpt logs/sd_hmi_uncond/checkpoints/last.ckpt \
-#       --ctrl_config configs/solarldm/ctrl_0094-hmi.yaml \
-#       --output logs/sd_hmi_uncond/checkpoints/ctrl_init.ckpt
-#
-# 然后 ctrl_0094-hmi.yaml 设 sd_locked: True 并从 ctrl_init.ckpt 加载
+# 训练完后，把 checkpoint 路径通过 ctrl_0094-hmi.yaml 的
+# model.params.sd_backbone_ckpt 传入；SolarControl 会严格初始化主 UNet 和 ControlNet encoder。
 # ============================================================
 
 model:

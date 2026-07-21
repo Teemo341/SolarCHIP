@@ -24,6 +24,8 @@ SolarControl: 在 SolarLDM 之上叠一个 ControlNet 风格的控制分支。
       `input_hint_block` 改为单层 zero-conv 投影(latent 形状直接对齐)。
 """
 
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 
@@ -116,6 +118,8 @@ class SolarControl(SolarLDM):
                               其余 skip 连接不加 control(用于消融)。
         sd_locked:            bool;True 时只训 ControlNet 分支(原版做法),
                               False 时把整个主 UNet 也一起训练。
+        sd_backbone_ckpt:     HMI unconditional SD checkpoint；锁定训练时必填。
+        sd_backbone_use_ema:  是否优先用源 SD 的 EMA 参数，默认 True。
         cond_drop_prob:       float;训练时随机把 hint 置零的概率,用于做
                               classifier-free guidance(可选,默认 0)。
     """
@@ -127,9 +131,24 @@ class SolarControl(SolarLDM):
         sd_locked: bool = False,
         cond_drop_prob: float = 0.0,
         control_scales=None,
+        sd_backbone_ckpt=None,
+        sd_backbone_use_ema: bool = True,
         *args,
         **kwargs,
     ):
+        if sd_locked and kwargs.get("use_ema", False):
+            raise ValueError(
+                "sd_locked=True 时主 UNet 完全冻结，不能启用只跟踪主 UNet 的 "
+                "use_ema；请设 use_ema=False"
+            )
+        if sd_locked and sd_backbone_ckpt is None:
+            raise ValueError(
+                "sd_locked=True 必须提供 sd_backbone_ckpt，不能冻结随机初始化的主 UNet"
+            )
+        if sd_backbone_ckpt is not None and not Path(sd_backbone_ckpt).is_file():
+            raise FileNotFoundError(
+                f"找不到 SD backbone checkpoint: {sd_backbone_ckpt}"
+            )
         # 强制 conditioning_key=None:cond 不走 DiffusionWrapper 的 concat/crossattn,
         # 全部从 ControlNet 分支注入(本类自己重写的 apply_model 接管)。
         kwargs["conditioning_key"] = None
@@ -139,6 +158,13 @@ class SolarControl(SolarLDM):
         self.only_mid_control = only_mid_control
         self.sd_locked = bool(sd_locked)
         self.cond_drop_prob = float(cond_drop_prob)
+        self.sd_backbone_ckpt = sd_backbone_ckpt
+        self.sd_backbone_use_ema = bool(sd_backbone_use_ema)
+        if self.sd_backbone_ckpt is not None:
+            self.initialize_from_sd_checkpoint(
+                self.sd_backbone_ckpt,
+                use_ema=self.sd_backbone_use_ema,
+            )
         self._set_sd_backbone_trainable(not self.sd_locked)
 
         # ControlNet 默认输出 = len(zero_convs) + 1 (middle_block_out)
@@ -151,6 +177,186 @@ class SolarControl(SolarLDM):
                 f"实际 {len(control_scales)}"
             )
             self.control_scales = list(control_scales)
+
+    @staticmethod
+    def _load_checkpoint_state_dict(path):
+        path = Path(path)
+        if not path.is_file():
+            raise FileNotFoundError(f"找不到 SD backbone checkpoint: {path}")
+        try:
+            checkpoint = torch.load(
+                path,
+                map_location="cpu",
+                mmap=True,
+                weights_only=False,
+            )
+        except TypeError:
+            try:
+                checkpoint = torch.load(
+                    path,
+                    map_location="cpu",
+                    weights_only=False,
+                )
+            except TypeError:
+                checkpoint = torch.load(path, map_location="cpu")
+        state_dict = checkpoint.get("state_dict", checkpoint)
+        if not isinstance(state_dict, dict):
+            raise TypeError(f"checkpoint state_dict 类型错误: {type(state_dict)}")
+        return {
+            key.removeprefix("module."): value
+            for key, value in state_dict.items()
+        }
+
+    @staticmethod
+    def _copy_module_state_strict(source, target, label):
+        try:
+            target.load_state_dict(source.state_dict(), strict=True)
+        except RuntimeError as error:
+            raise RuntimeError(f"ControlNet {label} 与主 UNet 结构不一致") from error
+
+    def _load_main_unet_from_sd_state(self, state_dict, use_ema):
+        diffusion_model = self.model.diffusion_model
+        target_state = diffusion_model.state_dict()
+        prefixes = ("model.diffusion_model.", "diffusion_model.")
+        source_state = None
+        for prefix in prefixes:
+            candidate = {
+                key[len(prefix):]: value
+                for key, value in state_dict.items()
+                if key.startswith(prefix)
+            }
+            if candidate:
+                source_state = candidate
+                break
+        if source_state is None:
+            raise KeyError(
+                "SD checkpoint 中找不到 model.diffusion_model.* 权重"
+            )
+
+        missing = sorted(set(target_state) - set(source_state))
+        unexpected = sorted(set(source_state) - set(target_state))
+        if missing or unexpected:
+            raise RuntimeError(
+                "SD backbone 与 ControlNet 主 UNet 结构不完全一致："
+                f"missing={missing[:5]}, unexpected={unexpected[:5]}"
+            )
+        diffusion_model.load_state_dict(source_state, strict=True)
+
+        ema_parameters_loaded = 0
+        if use_ema:
+            missing_ema = []
+            with torch.no_grad():
+                for name, parameter in diffusion_model.named_parameters():
+                    shadow_name = (f"diffusion_model.{name}").replace(".", "")
+                    key = f"model_ema.{shadow_name}"
+                    if key not in state_dict:
+                        missing_ema.append(key)
+                        continue
+                    source = state_dict[key]
+                    if source.shape != parameter.shape:
+                        raise RuntimeError(
+                            f"EMA 参数 shape 不匹配: {key}, "
+                            f"source={tuple(source.shape)}, target={tuple(parameter.shape)}"
+                        )
+                    parameter.copy_(source)
+                    ema_parameters_loaded += 1
+            if missing_ema:
+                raise RuntimeError(
+                    "要求使用 SD EMA 权重，但 checkpoint 缺少 EMA 参数："
+                    f"{missing_ema[:5]}"
+                )
+        return len(source_state), ema_parameters_loaded
+
+    def _load_first_stage_latent_stats(self, state_dict):
+        if not self.normalize_latent_per_channel:
+            return 0
+        required = (
+            "latent_mean",
+            "latent_std",
+            "latent_stats_initialized",
+        )
+        missing = [key for key in required if key not in state_dict]
+        if missing:
+            raise RuntimeError(
+                "SD checkpoint 缺少逐通道 HMI latent stats，不能与当前归一化协议兼容："
+                f"{missing}。请使用第 2 包之后重新训练的 HMI unconditional checkpoint"
+            )
+        if not bool(state_dict["latent_stats_initialized"].item()):
+            raise RuntimeError("SD checkpoint 中的 HMI latent stats 尚未初始化")
+        with torch.no_grad():
+            for key in required:
+                target = getattr(self, key)
+                source = state_dict[key]
+                if source.shape != target.shape:
+                    raise RuntimeError(
+                        f"{key} shape 不匹配: source={tuple(source.shape)}, "
+                        f"target={tuple(target.shape)}"
+                    )
+                target.copy_(source)
+        return len(required)
+
+    def _initialize_control_encoder_from_main_unet(self):
+        backbone = self.model.diffusion_model
+        control = self.control_model
+        self._copy_module_state_strict(
+            backbone.time_embed, control.time_embed, "time_embed"
+        )
+        self._copy_module_state_strict(
+            backbone.input_blocks, control.input_blocks, "input_blocks"
+        )
+        self._copy_module_state_strict(
+            backbone.middle_block, control.middle_block, "middle_block"
+        )
+        if hasattr(backbone, "label_emb") or hasattr(control, "label_emb"):
+            if not (hasattr(backbone, "label_emb") and hasattr(control, "label_emb")):
+                raise RuntimeError("主 UNet 与 ControlNet 的 label_emb 配置不一致")
+            self._copy_module_state_strict(
+                backbone.label_emb, control.label_emb, "label_emb"
+            )
+
+    @staticmethod
+    def _zero_module_parameters(module):
+        count = 0
+        with torch.no_grad():
+            for parameter in module.parameters():
+                parameter.zero_()
+                count += 1
+        return count
+
+    def _reset_and_validate_control_outputs(self):
+        modules = list(self.control_model.zero_convs)
+        modules.append(self.control_model.middle_block_out)
+        if hasattr(self.control_model, "input_hint_block"):
+            hint_children = list(self.control_model.input_hint_block.children())
+            if hint_children:
+                modules.append(hint_children[-1])
+
+        parameter_count = sum(
+            self._zero_module_parameters(module) for module in modules
+        )
+        nonzero = []
+        for module_index, module in enumerate(modules):
+            for name, parameter in module.named_parameters():
+                if torch.count_nonzero(parameter).item() != 0:
+                    nonzero.append(f"module[{module_index}].{name}")
+        if nonzero:
+            raise RuntimeError(f"ControlNet zero-conv 初始化失败: {nonzero[:5]}")
+        return parameter_count
+
+    def initialize_from_sd_checkpoint(self, path, use_ema=True):
+        """严格加载 SD backbone，并用其 encoder 初始化 ControlNet。"""
+        state_dict = self._load_checkpoint_state_dict(path)
+        unet_tensors, ema_parameters = self._load_main_unet_from_sd_state(
+            state_dict, use_ema=use_ema
+        )
+        latent_stats = self._load_first_stage_latent_stats(state_dict)
+        self._initialize_control_encoder_from_main_unet()
+        zero_parameters = self._reset_and_validate_control_outputs()
+        print(
+            f"[SolarControl] initialized from {path}: "
+            f"UNet tensors={unet_tensors}, EMA params={ema_parameters}, "
+            f"latent stats={latent_stats}, zeroed control params={zero_parameters}"
+        )
 
     def _set_sd_backbone_trainable(self, trainable):
         """统一设置主 UNet 的梯度与模式，避免 optimizer 外仍计算参数梯度。"""
