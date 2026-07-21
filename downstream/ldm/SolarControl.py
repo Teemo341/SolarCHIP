@@ -1,16 +1,14 @@
 """
 SolarControl: 在 SolarLDM 之上叠一个 ControlNet 风格的控制分支。
 
-设计选择(由用户确认):
+设计选择:
   1. hint = 另一模态经 SolarCHIP AE 编码后的 latent,shape = (B, 128, 16, 16),
      已经在 latent 空间,无需再做 8x 下采样 —— 因此把原版 ControlNet 的
      `input_hint_block`(走 3 次 stride-2 conv)替换为一个仅做通道投影的轻量结构。
-  2. backbone(主 UNet)从零开始训,与 control 分支**联合训练**。
-     —— 原版 ControlNet 的 `ControlledUnetModel.forward` 用 `with torch.no_grad():`
-        把 input_blocks / middle_block 锁住,我们要写一个解锁版。
-  3. backbone 不锁定。
-     `configure_optimizers` 同时优化 `self.model.parameters()`(整个 UNet)
-     + `self.control_model.parameters()`(ControlNet 分支)。
+  2. `sd_locked=True` 时完整冻结 backbone，只训练 ControlNet；
+     `sd_locked=False` 时可选择 backbone 与 control 分支联合训练。
+  3. 即使 backbone 冻结，forward 也不能用 `torch.no_grad()` 包住 decoder，
+     因为 control residual 仍需穿过冻结层反传到 ControlNet。
      `self.first_stage_model` / `self.cond_stage_model`(SolarCHIP AE)
      仍然由 SolarLDM 设置为 eval + requires_grad=False,保持冻结。
 
@@ -25,9 +23,6 @@ SolarControl: 在 SolarLDM 之上叠一个 ControlNet 风格的控制分支。
     - SolarControlNet:auxiliary.ControlNet.cldm.cldm.ControlNet 的子类,
       `input_hint_block` 改为单层 zero-conv 投影(latent 形状直接对齐)。
 """
-
-import os
-import sys
 
 import torch
 import torch.nn as nn
@@ -120,7 +115,7 @@ class SolarControl(SolarLDM):
         only_mid_control:     bool;True 时只用 middle_block 的 control,
                               其余 skip 连接不加 control(用于消融)。
         sd_locked:            bool;True 时只训 ControlNet 分支(原版做法),
-                              False 时把整个主 UNet 也一起训(用户选这个)。
+                              False 时把整个主 UNet 也一起训练。
         cond_drop_prob:       float;训练时随机把 hint 置零的概率,用于做
                               classifier-free guidance(可选,默认 0)。
     """
@@ -142,8 +137,9 @@ class SolarControl(SolarLDM):
 
         self.control_model = instantiate_from_config(control_stage_config)
         self.only_mid_control = only_mid_control
-        self.sd_locked = sd_locked
+        self.sd_locked = bool(sd_locked)
         self.cond_drop_prob = float(cond_drop_prob)
+        self._set_sd_backbone_trainable(not self.sd_locked)
 
         # ControlNet 默认输出 = len(zero_convs) + 1 (middle_block_out)
         n_outs = len(self.control_model.zero_convs) + 1
@@ -155,6 +151,24 @@ class SolarControl(SolarLDM):
                 f"实际 {len(control_scales)}"
             )
             self.control_scales = list(control_scales)
+
+    def _set_sd_backbone_trainable(self, trainable):
+        """统一设置主 UNet 的梯度与模式，避免 optimizer 外仍计算参数梯度。"""
+        self.model.requires_grad_(trainable)
+        if trainable and self.training:
+            self.model.train()
+        else:
+            self.model.eval()
+        if not trainable:
+            for parameter in self.model.parameters():
+                parameter.grad = None
+
+    def train(self, mode=True):
+        """Lightning 切回 train 模式时，锁定的 backbone 仍保持 eval。"""
+        super().train(mode)
+        if getattr(self, "sd_locked", False):
+            self.model.eval()
+        return self
 
     # ------------------------------------------------------------------
     # 数据接口:第一阶段得到 z,第二阶段单独编码 cond modality 得到 hint
@@ -222,20 +236,16 @@ class SolarControl(SolarLDM):
         return eps
 
     # ------------------------------------------------------------------
-    # 优化器:UNet + ControlNet 联合训练(SolarCHIP AE 仍然冻结)
+    # 优化器:锁定时只训练 ControlNet；解锁时才加入整个主 UNet
     # ------------------------------------------------------------------
     def configure_optimizers(self):
         from torch.optim.lr_scheduler import LambdaLR
 
         lr = self.learning_rate
-        params = list(self.control_model.parameters())
+        self._set_sd_backbone_trainable(not self.sd_locked)
+        params = [p for p in self.control_model.parameters() if p.requires_grad]
         if not self.sd_locked:
-            # 全部主 UNet 一起练(用户选项:from scratch + 联合微调)
-            params += list(self.model.parameters())
-        else:
-            # 兼容原版 ControlNet 锁定模式:只放开 output_blocks + out
-            params += list(self.model.diffusion_model.output_blocks.parameters())
-            params += list(self.model.diffusion_model.out.parameters())
+            params += [p for p in self.model.parameters() if p.requires_grad]
 
         if self.learn_logvar:
             params.append(self.logvar)

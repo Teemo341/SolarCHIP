@@ -48,7 +48,7 @@ model:
 
     # ---- ControlNet 相关 ----
     only_mid_control: False     # False: 全部 13 层 zero-conv 注入; True: 仅 middle block (消融用)
-    sd_locked: False            # False: 主 UNet 与 ControlNet 联合从零训练
+    sd_locked: True             # True: 完整冻结预训练主 UNet，只训练 ControlNet
     cond_drop_prob: 0.1         # 训练时 10% 概率把 hint 置零, 推理时可做 CFG
 
     # ---- 11-模态 SolarCHIP wrapper (与 concat 版同一份 AE ckpt) ----
