@@ -344,11 +344,16 @@ class SolarLDM(LatentDiffusion):
 
         if self._is_global_zero():
             for stage, mean, std, count in initialized:
+                mean_values = ", ".join(
+                    f"{value:.6g}" for value in mean.detach().cpu().tolist()
+                )
+                std_values = ", ".join(
+                    f"{value:.6g}" for value in std.detach().cpu().tolist()
+                )
                 print(
                     f"[SolarLDM] initialized {stage} full-train-set "
                     f"per-channel latent stats ({count} values/channel): "
-                    f"mean=[{mean.min().item():.6g}, {mean.max().item():.6g}], "
-                    f"std=[{std.min().item():.6g}, {std.max().item():.6g}]"
+                    f"mean=[{mean_values}], std=[{std_values}]"
                 )
 
     @staticmethod
