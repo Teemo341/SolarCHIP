@@ -26,6 +26,9 @@ from auxiliary.ldm.modules.distributions.distributions import DiagonalGaussianDi
 from solarchip.utils.util import instantiate_from_config
 
 
+UNCONDITIONAL_CONFIG = "__is_unconditional__"
+
+
 class SolarLDM(LatentDiffusion):
     """
     SolarCHIP downstream Latent Diffusion Model.
@@ -44,11 +47,20 @@ class SolarLDM(LatentDiffusion):
         **kwargs,
     ):
         # 父类初始化时会调用 self.instantiate_first_stage(first_stage_config)
-        # 和 self.instantiate_cond_stage(cond_stage_config) —— 我们把
-        # solarchip_config 通过 first_stage_config 这个槽位塞进去,
-        # cond_stage_config 给一个占位符,让重写的方法去识别。
+        # 和 self.instantiate_cond_stage(cond_stage_config)。条件模型仍用占位符
+        # 从 SolarCHIP wrapper 中抽取 cond AE；无条件模型则必须把
+        # "__is_unconditional__" 原样传给 LatentDiffusion，否则父类会根据
+        # concat_mode 把它误判成 concat/cross-attention 模型。
         kwargs.pop("first_stage_config", None)
-        kwargs.pop("cond_stage_config", None)
+        requested_cond_stage_config = kwargs.pop("cond_stage_config", None)
+        self._solar_is_unconditional = (
+            requested_cond_stage_config == UNCONDITIONAL_CONFIG
+        )
+        parent_cond_stage_config = (
+            UNCONDITIONAL_CONFIG
+            if self._solar_is_unconditional
+            else {"_solarldm_extract_from_wrapper": True}
+        )
 
         self._solarchip_config = solarchip_config  # 临时挂在 self 上,
         # 由于此时 nn.Module 还未完成 __init__,_modules 不存在,
@@ -56,7 +68,7 @@ class SolarLDM(LatentDiffusion):
 
         super().__init__(
             first_stage_config=solarchip_config,
-            cond_stage_config={"_solarldm_extract_from_wrapper": True},
+            cond_stage_config=parent_cond_stage_config,
             first_stage_key=first_stage_key,
             cond_stage_key=cond_stage_key,
             *args,
@@ -133,15 +145,20 @@ class SolarLDM(LatentDiffusion):
             "目前实现的 solarchip_base / solarchip_mergeaia / solarchip_mergeall 都满足。"
         )
 
-        # 找到 first / cond 真正对应的 AE_CNN 对象
+        # 找到 first / cond 真正对应的 AE_CNN 对象。无条件模型只保留
+        # first-stage AE，不实例化 cond_stage_model，也不会执行条件编码。
         first_model = wrapper.get_model(self.first_stage_key)
-        if self.cond_stage_key == self.first_stage_key:
+        if self._solar_is_unconditional:
+            cond_model = None
+        elif self.cond_stage_key == self.first_stage_key:
             cond_model = first_model
         else:
             cond_model = wrapper.get_model(self.cond_stage_key)
 
         # 把需要保留的 AE_CNN 从 wrapper 中摘出来,避免 wrapper 被 GC 时连带它们
-        keep_ids = {id(first_model), id(cond_model)}
+        keep_ids = {id(first_model)}
+        if cond_model is not None:
+            keep_ids.add(id(cond_model))
         keys_to_pop = [
             k for k, m in wrapper.model_dict.items() if id(m) in keep_ids
         ]
@@ -164,12 +181,13 @@ class SolarLDM(LatentDiffusion):
         for p in self.first_stage_model.parameters():
             p.requires_grad = False
 
-        # 把 cond_model 暂存到 self.__dict__ —— 这样不会触发 nn.Module 的
-        # 自动注册(否则 cond_model 会先以 _pending 名义被注册一次,
-        # 等会儿 instantiate_cond_stage 再赋值到 cond_stage_model 时
-        # 又会注册一次,出现重复)。
-        self.__dict__["_pending_cond_model"] = cond_model
-        self.__dict__["_pending_cond_is_first"] = (cond_model is first_model)
+        if not self._solar_is_unconditional:
+            # 把 cond_model 暂存到 self.__dict__ —— 这样不会触发 nn.Module 的
+            # 自动注册(否则 cond_model 会先以 _pending 名义被注册一次,
+            # 等会儿 instantiate_cond_stage 再赋值到 cond_stage_model 时
+            # 又会注册一次,出现重复)。
+            self.__dict__["_pending_cond_model"] = cond_model
+            self.__dict__["_pending_cond_is_first"] = (cond_model is first_model)
 
         print(
             f"[SolarLDM] first_stage_key='{self.first_stage_key}', "
@@ -183,6 +201,13 @@ class SolarLDM(LatentDiffusion):
         cond model 已经在 instantiate_first_stage 里准备好,
         这里只负责把它挂到 self.cond_stage_model 上,并设置 train/eval、grad。
         """
+        if self._solar_is_unconditional or config == UNCONDITIONAL_CONFIG:
+            self.__dict__.pop("_pending_cond_model", None)
+            self.__dict__.pop("_pending_cond_is_first", None)
+            self.cond_stage_model = None
+            print(f"[SolarLDM] Training {self.__class__.__name__} unconditionally")
+            return
+
         cond_model = self.__dict__.pop("_pending_cond_model", None)
         cond_is_first = self.__dict__.pop("_pending_cond_is_first", False)
         if cond_model is None:
@@ -334,7 +359,7 @@ class SolarLDM(LatentDiffusion):
                     cond_latent = cond_latent.transpose(1, 2).reshape(c.shape[0], -1, hw, hw)
                 log[f"visualization/{self.cond_stage_key}/cond_latent"] = self._to_loggable_latent(cond_latent).detach().cpu()
 
-        if sample and c is not None:
+        if sample:
             with self.ema_scope("Plotting"):
                 samples, _ = self.sample_log(
                     cond=c,

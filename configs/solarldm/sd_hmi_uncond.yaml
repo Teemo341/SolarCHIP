@@ -19,7 +19,7 @@ model:
   target: downstream.ldm.SolarLDM.SolarLDM
   params:
     first_stage_key: 'hmi'
-    cond_stage_key:  'hmi'      # 自条件, 实际被 conditioning_key=None 忽略
+    cond_stage_key:  'hmi'      # 接口占位；真正无条件模式不会构造或编码 cond stage
 
     learning_rate: 5e-5
     image_size: 32
@@ -52,7 +52,8 @@ model:
     solarchip_config:
       target: solarchip.SolarCHIP.solarchip_base
       params:
-        modal_list: ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']
+        # 无条件模型只需要 HMI AE；checkpoint 中其它模态权重会作为 unexpected keys 忽略。
+        modal_list: ['hmi']
         save_memory: True
         ckpt_path: logs/solarchip_CNN_AE_base_zscore_2026-07-10T18-03-45/checkpoints/last.ckpt
         base_model:
