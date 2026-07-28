@@ -200,27 +200,27 @@ class SolarImageLogger(Callback):
             else:  # usually positive, like aia
                 vmin = 0
         elif "hmi" in name:
-            vmin = -2.5, vmax = 2.5, cmap = "RdBu_r"
+            vmin = -3.0; vmax = 3.0; cmap = "RdBu_r"
         elif "0094" in name:
-            vmin = 0, vmax = 2.5
+            vmin = 0; vmax = 4.0
         elif "0131" in name:
-            vmin = 0, vmax = 2.5
+            vmin = 0; vmax = 3.0
         elif "0171" in name:
-            vmin = 0, vmax = 2.5
+            vmin = 0; vmax = 2.5
         elif "0193" in name:
-            vmin = 0, vmax = 2.5
+            vmin = 0; vmax = 2.5
         elif "0211" in name:
-            vmin = 0, vmax = 2.5
+            vmin = 0; vmax = 2.5
         elif "0304" in name:
-            vmin = 0, vmax = 2.5
+            vmin = 0; vmax = 2.5
         elif "0335" in name:
-            vmin = 0, vmax = 2.5
+            vmin = 0; vmax = 4.0
         elif "1600" in name:
-            vmin = 0, vmax = 2.5
+            vmin = 0; vmax = 1.5
         elif "1700" in name:
-            vmin = 0, vmax = 2.5
+            vmin = 0; vmax = 1.5
         elif "4500" in name:
-            vmin = 0, vmax = 2.5
+            vmin = 0; vmax = 1.0
         else:
             raise ValueError(f"Unknown image name: {name}")
         return cmap, vmin, vmax

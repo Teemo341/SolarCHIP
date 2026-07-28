@@ -9,7 +9,6 @@ from omegaconf import OmegaConf
 import argparse
 
 from data.download_api import get_image_from_time
-from models.clipmodels.solarclip import SolarCLIP
 
 
 def instantiate_from_config(config):

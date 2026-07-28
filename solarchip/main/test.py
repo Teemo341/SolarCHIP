@@ -1,16 +1,15 @@
+
 import argparse
 import datetime, os, sys, glob
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 from omegaconf import OmegaConf
-
 import pytorch_lightning as pl
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning import seed_everything
 
-from models.reconmodels.autoencoder.util import instantiate_from_config
-from solarchip.utils.util import TrainerSetup
+from solarchip.utils.util import instantiate_from_config, TrainerSetup
+
+
 def get_parser(**parser_kwargs):
     def str2bool(v):
         if isinstance(v, bool):
