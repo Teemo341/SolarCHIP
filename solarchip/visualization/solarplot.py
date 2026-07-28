@@ -7,6 +7,7 @@ import sunpy.map
 from astropy.io import fits
 
 INSTRUME_DICT = {
+    'hmi':  'HMI_SIDE1',
     '0094': 'AIA_4',
     '0131': 'AIA_1',
     '0171': 'AIA_3',
@@ -20,6 +21,7 @@ INSTRUME_DICT = {
 }
 
 WAVELNTH_DICT = {
+    'hmi':  6173,
     '0094': 94,
     '0131': 131,
     '0171': 171,
@@ -32,6 +34,22 @@ WAVELNTH_DICT = {
     '4500': 4500
 }
 
+# HMI full-res: ~0.505 arcsec/px @ 4096² → 1024² downsampled ≈ 2.0 arcsec/px
+# AIA full-res: ~0.600 arcsec/px @ 4096² → 1024² downsampled = 2.4 arcsec/px
+CDELT_DICT = {
+    'hmi':  2.0,
+    '0094': 2.4,
+    '0131': 2.4,
+    '0171': 2.4,
+    '0193': 2.4,
+    '0211': 2.4,
+    '0304': 2.4,
+    '0335': 2.4,
+    '1600': 2.4,
+    '1700': 2.4,
+    '4500': 2.4
+}
+
 
 def get_header(modal: str,
                time: str):
@@ -41,22 +59,28 @@ def get_header(modal: str,
     header['NAXIS2'] = 1024
     header['IMG_TYPE'] = 'LIGHT'
 
-    header['TELESCOP'] = 'SDO/AIA'
+    if modal == 'hmi':
+        header['TELESCOP'] = 'SDO/HMI'
+        header['OBSRVTRY'] = 'SDO'
+    else:
+        header['TELESCOP'] = 'SDO/AIA'
+
     header['DATE-OBS'] =  time       #'2010-06-03T00:00:08.14'
     header['INSTRUME'] = INSTRUME_DICT.get(modal)
     header['WAVELNTH'] = WAVELNTH_DICT.get(modal)
     
     header['WAVEUNIT'] = 'angstrom'
 
+    cdelt = CDELT_DICT.get(modal, 2.4)
     header['CTYPE1'] = 'HPLN-TAN'
     header['CUNIT1'] = 'arcsec'
     header['CRVAL1'] = 0.0
-    header['CDELT1'] = 2.4
+    header['CDELT1'] = cdelt
     header['CRPIX1'] = 512.5
     header['CTYPE2'] = 'HPLT-TAN'
     header['CUNIT2'] = 'arcsec'
     header['CRVAL2'] = 0.0
-    header['CDELT2'] = 2.4
+    header['CDELT2'] = cdelt
     header['CRPIX2'] = 512.5
     header['CROTA2'] = 0.0
 
@@ -82,9 +106,18 @@ def solarplot(data: np.array,
     mymap = sunpy.map.Map((data, header))
 
     plt.figure(figsize=figsize)
-    mymap.plot()
+
+    if modal == 'hmi':
+        # HMI 磁图：正负值对称，使用发散色系
+        vmax = np.max(np.abs(data))
+        mymap.plot(cmap='RdBu_r', vmin=-vmax, vmax=vmax)
+    else:
+        # AIA：SunPy 根据 INSTRUME+WAVELNTH 自动匹配 sdoaia 官方色表
+        mymap.plot()
+
     # plt.colorbar()
     plt.savefig(save_path)
+    plt.close()
 
 
                 

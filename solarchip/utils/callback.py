@@ -188,23 +188,45 @@ class SolarImageLogger(Callback):
         self.log_first_step = log_first_step
         self._last_logged_epoch = {"train": None, "val": None}
 
-    def get_cmap_and_limits(self, inputs):
-        # vmin = np.min(inputs)
-        # vmax = np.max(inputs)
-        # if vmin <0: # hmi
-        #     cmap = "RdBu_r"
-        #     vmax = np.max([np.abs(vmin), np.abs(vmax)]) / 2
-        #     vmin = -vmax
-        # else: # usually positive, like aia
-        #     cmap = "Reds"
-        #     vmin = 0
-        cmap = "RdBu_r"
-        vmin = -0.6
-        vmax= 0.6
+    def get_cmap_and_limits(self, inputs, name="default"):
+        cmap = "Reds"
+        if name == "default":
+            vmin = np.min(inputs)
+            vmax = np.max(inputs)
+            if vmin < 0:  # hmi
+                cmap = "RdBu_r"
+                vmax = np.max([np.abs(vmin), np.abs(vmax)]) / 2
+                vmin = -vmax
+            else:  # usually positive, like aia
+                vmin = 0
+        elif "hmi" in name:
+            vmin = -2.5, vmax = 2.5, cmap = "RdBu_r"
+        elif "0094" in name:
+            vmin = 0, vmax = 2.5
+        elif "0131" in name:
+            vmin = 0, vmax = 2.5
+        elif "0171" in name:
+            vmin = 0, vmax = 2.5
+        elif "0193" in name:
+            vmin = 0, vmax = 2.5
+        elif "0211" in name:
+            vmin = 0, vmax = 2.5
+        elif "0304" in name:
+            vmin = 0, vmax = 2.5
+        elif "0335" in name:
+            vmin = 0, vmax = 2.5
+        elif "1600" in name:
+            vmin = 0, vmax = 2.5
+        elif "1700" in name:
+            vmin = 0, vmax = 2.5
+        elif "4500" in name:
+            vmin = 0, vmax = 2.5
+        else:
+            raise ValueError(f"Unknown image name: {name}")
         return cmap, vmin, vmax
     
     @rank_zero_only
-    def _log_images(self, pl_module, images, batch_idx, split, save_dir=None):
+    def _log_images(self, pl_module, images, batch_idx, split, save_dir=None, modal=None):
         """
         Logs images either to TensorBoard or saves them locally based on the provided save_dir.
         If save_dir is provided, saves images locally. Otherwise, logs them to TensorBoard.
@@ -219,7 +241,7 @@ class SolarImageLogger(Callback):
 
         for k, img_tensor in images.items():
             image_array = img_tensor.cpu().numpy()
-            cmap, vmin, vmax = self.get_cmap_and_limits(image_array)
+            cmap, vmin, vmax = self.get_cmap_and_limits(image_array,k)
             
             num_images = min(image_array.shape[0], self.max_images)
             plt.figure(figsize=(16*num_images, 16))
