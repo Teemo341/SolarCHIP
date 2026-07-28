@@ -26,7 +26,7 @@ model:
     loss_type: l2
     parameterization: eps
     monitor: val/loss_simple_ema
-    use_ema: True
+    use_ema: False
     scale_by_std: False               # 旧的单标量 normalization，保持关闭
     normalize_latent_per_channel: True
     latent_stats_eps: 1e-6            # 完整训练集上分别统计 HMI/0094；随 checkpoint 保存

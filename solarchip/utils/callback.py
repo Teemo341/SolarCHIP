@@ -189,15 +189,18 @@ class SolarImageLogger(Callback):
         self._last_logged_epoch = {"train": None, "val": None}
 
     def get_cmap_and_limits(self, inputs):
-        vmin = np.min(inputs)
-        vmax = np.max(inputs)
-        if vmin <0: # hmi
-            cmap = "RdBu_r"
-            vmax = np.max([np.abs(vmin), np.abs(vmax)]) / 2
-            vmin = -vmax
-        else: # usually positive, like aia
-            cmap = "Reds"
-            vmin = 0
+        # vmin = np.min(inputs)
+        # vmax = np.max(inputs)
+        # if vmin <0: # hmi
+        #     cmap = "RdBu_r"
+        #     vmax = np.max([np.abs(vmin), np.abs(vmax)]) / 2
+        #     vmin = -vmax
+        # else: # usually positive, like aia
+        #     cmap = "Reds"
+        #     vmin = 0
+        cmap = "RdBu_r"
+        vmin = -0.6
+        vmax= 0.6
         return cmap, vmin, vmax
     
     @rank_zero_only
