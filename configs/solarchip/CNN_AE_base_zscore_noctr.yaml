@@ -30,9 +30,9 @@ model:
       rec_loss_type: l2
       kl_weight: 0.0
       perceptual_weight: 0.0
-      cls_contrastive_weight: 0.01
-      pat_contrastive_weight: 0.0001
-      int_contrastive_weight: 0.0001
+      cls_contrastive_weight: 0.0
+      pat_contrastive_weight: 0.0
+      int_contrastive_weight: 0.0
 
 data:
   target: data.build.DataModuleFromConfig
@@ -64,7 +64,7 @@ data:
           - 360
         time_interval: 
           - 5000
-          - 6000
+          - 5400
         time_step: 10
 
 
@@ -73,7 +73,9 @@ lightning:
     image_logger:
       target: solarchip.utils.callback.SolarImageLogger
       params:
-        batch_frequency: 23
+        log_on_batch_idx: False
+        # 第 N、2N、3N... 个 train epoch 各绘制一次 train/validation 图像。
+        every_n_train_epochs: 5
         max_images: 2
         
     early_stop:
