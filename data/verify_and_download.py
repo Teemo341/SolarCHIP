@@ -8,7 +8,7 @@ import argparse
 from data.utils import transfer_id_to_date, get_modal_dir, read_fits_image
 
 
-def download_convert(modal, time_interval = [0, 1e+32]):
+def download_convert(modal, time_interval = [0, 1e+32], time_step = 1):
     """
     modal: hmi, 0094, 0131, 0171, 0193, 0211, 0304, 0335, 1600, 1700, 4500
     """
@@ -23,6 +23,8 @@ def download_convert(modal, time_interval = [0, 1e+32]):
     pbar = tqdm(range(time_interval[0], time_interval[1]))
     for i in pbar:
         if i<time_interval[0] or i>time_interval[1]:
+            continue
+        if i % time_step != 0:
             continue
         
         date_time = transfer_id_to_date(i)
@@ -83,6 +85,7 @@ if __name__ == '__main__' :
     args.add_argument('--modal', type=str, default='hmi', help='the modal to download, should be one of hmi, 0094, 0131, 0171, 0193, 0211, 0304, 0335, 1600, 1700, 4500')
     args.add_argument('--start', type=int, default=0, help='the start id to download, should be between 0 and 6000')
     args.add_argument('--end', type=int, default=6000, help='the end id to download, should be between 0 and 6000')
+    args.add_argument('--time_step', type=int, default=1, help='only download every time_step-th sample')
     args = args.parse_args()
 
-    download_convert(args.modal, time_interval=[args.start, args.end])
+    download_convert(args.modal, time_interval=[args.start, args.end], time_step=args.time_step)

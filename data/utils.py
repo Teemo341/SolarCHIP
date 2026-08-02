@@ -92,7 +92,7 @@ def transfer_fits_to_pt(modal, exist_list=None, time_interval = [0,7452000]):
     print(f'transfer done, {move_num} files transfterd, exist list saved to ./Data/idx_list/{modal}_exist_idx.pkl')
 
 
-def update_exist_list(modal, save_dir = './data/idx_list', time_interval = [0,5400]): 
+def update_exist_list(modal, save_dir = './data/idx_list', time_interval = [0,6000]): 
     print(f'begin to update {modal} exist list')
     exist_idx = np.zeros(time_interval[1], dtype=np.bool_)
     for i in tqdm(range(time_interval[0], time_interval[1])):
