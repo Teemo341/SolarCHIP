@@ -36,11 +36,11 @@ model:
     scheduler_config:
       target: auxiliary.ldm.lr_scheduler.LambdaWarmUpCosineScheduler
       params:
-        warm_up_steps: 770
+        warm_up_steps: 3080
         lr_start: 0.01
         lr_min: 0.1
         lr_max: 1.0
-        max_decay_steps: 15400
+        max_decay_steps: 61600
 
     concat_mode: False
     cond_stage_config: "__is_unconditional__"       # 无条件训练 → UNet 纯去噪器, 无 spatial_transformer
@@ -79,7 +79,7 @@ model:
         image_size: 32
         in_channels: 32
         out_channels: 32
-        model_channels: 320
+        model_channels: 192
         attention_resolutions: [4, 2, 1]
         num_res_blocks: 2
         channel_mult: [1, 2, 4, 4]
@@ -129,7 +129,7 @@ lightning:
       params:
         log_on_batch_idx: False
         # 第 N、2N、3N... 个 train epoch 各绘制一次 train/validation 图像。
-        every_n_train_epochs: 4
+        every_n_train_epochs: 16
         max_images: 2
         log_images_kwargs:
           # ddim_steps: 100
@@ -149,6 +149,6 @@ lightning:
   trainer:
     strategy: ddp
     num_sanity_val_steps: 0      # latent stats 在 on_train_start 完整预计算后再做验证
-    max_epochs: 200
+    max_epochs: 800
     precision: bf16-mixed
     log_every_n_steps: 4

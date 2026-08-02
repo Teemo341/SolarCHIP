@@ -1,14 +1,14 @@
 import math
-import random
-from omegaconf import OmegaConf
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import pytorch_lightning as pl
+# support both versions
+try:
+    import lightning.pytorch as pl
+except ImportError:
+    import pytorch_lightning as pl
 
-import matplotlib.pyplot as plt
-import numpy as np
+
 
 from .utils.util import instantiate_from_config
 from auxiliary.ldm.modules.distributions.distributions import DiagonalGaussianDistribution
@@ -145,11 +145,20 @@ class solarchip_base(pl.LightningModule):
                     int_ctr_loss += int_ctr_loss_tmp
                     del int_ctr_loss_tmp
                 del z_aia
-        cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1)
-        pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1)
-        int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1)
-        total_loss = rec_loss + self.cls_ctr_weight * self.norm_loss(cls_ctr_loss) + self.pat_ctr_weight * self.norm_loss(pat_ctr_loss) + self.int_ctr_weight * self.norm_loss(int_ctr_loss)
-        total_loss_item = rec_loss.item() + self.cls_ctr_weight * cls_ctr_loss.item() + self.pat_ctr_weight * pat_ctr_loss.item() + self.int_ctr_weight * int_ctr_loss.item()
+            cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1)
+            pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1)
+            int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1)
+        total_loss = rec_loss
+        total_loss_item = rec_loss.item()
+        if self.cls_ctr_weight > 0:
+            total_loss += self.cls_ctr_weight * self.norm_loss(cls_ctr_loss)
+            total_loss_item += self.cls_ctr_weight * cls_ctr_loss.item()
+        if self.pat_ctr_weight > 0:
+            total_loss += self.pat_ctr_weight * self.norm_loss(pat_ctr_loss)
+            total_loss_item += self.pat_ctr_weight * pat_ctr_loss.item()
+        if self.int_ctr_weight > 0:
+            total_loss += self.int_ctr_weight * self.norm_loss(int_ctr_loss)
+            total_loss_item += self.int_ctr_weight * int_ctr_loss.item()
         del rec_loss, cls_ctr_loss, pat_ctr_loss, int_ctr_loss
         loss_dict['hmi/total_loss'] = total_loss_item
         if optimize:
@@ -182,8 +191,17 @@ class solarchip_base(pl.LightningModule):
                 if self.int_ctr_weight > 0:
                     int_ctr_loss = self.contrastive_loss_fn.int_contrastive_loss(z_hmi, z_aia)
                     loss_dict[f"int_ctr_loss/hmi_{modal}"] = (int_ctr_loss.item()+loss_dict[f"int_ctr_loss/hmi_{modal}"]) / 2
-            total_loss = rec_loss + self.cls_ctr_weight * self.norm_loss(cls_ctr_loss) + self.pat_ctr_weight * self.norm_loss(pat_ctr_loss) + self.int_ctr_weight * self.norm_loss(int_ctr_loss)
-            total_loss_item = rec_loss.item() + self.cls_ctr_weight * cls_ctr_loss.item() + self.pat_ctr_weight * pat_ctr_loss.item() + self.int_ctr_weight * int_ctr_loss.item()
+            total_loss = rec_loss
+            total_loss_item = rec_loss.item()
+            if self.cls_ctr_weight > 0:
+                total_loss += self.cls_ctr_weight * self.norm_loss(cls_ctr_loss)
+                total_loss_item += self.cls_ctr_weight * cls_ctr_loss.item()
+            if self.pat_ctr_weight > 0:
+                total_loss += self.pat_ctr_weight * self.norm_loss(pat_ctr_loss)
+                total_loss_item += self.pat_ctr_weight * pat_ctr_loss.item()
+            if self.int_ctr_weight > 0:
+                total_loss += self.int_ctr_weight * self.norm_loss(int_ctr_loss)
+                total_loss_item += self.int_ctr_weight * int_ctr_loss.item()
             del z_aia, rec_loss, cls_ctr_loss, pat_ctr_loss, int_ctr_loss
             loss_dict[f'{modal}/total_loss'] = total_loss_item
             if optimize:
@@ -279,6 +297,7 @@ class solarchip_base(pl.LightningModule):
             schedulers.step()
 
     def validation_step(self, batch, batch_idx):
+        rec_loss = 0
         with torch.no_grad():
             if self.save_memory:
                 loss_dict = self.forward_save_memory(batch, optimize=False)
@@ -286,9 +305,13 @@ class solarchip_base(pl.LightningModule):
                 loss_dict = self.forward_full_memory(batch, optimize=False)
         for k, v in loss_dict.items():
             self.log(f'val/{k}', v, logger=True, on_epoch=True, sync_dist=True)
+            if 'rec_loss' in k:
+                rec_loss += v
         self.log('val_loss', loss_dict['loss'], logger=True, on_epoch=True, sync_dist=True)
+        self.log('val_rec_loss', rec_loss, logger=True, on_epoch=True, sync_dist=True)
 
     def test_step(self, batch, batch_idx):
+        rec_loss = 0
         with torch.no_grad():
             if self.save_memory:
                 loss_dict = self.forward_save_memory(batch, optimize=False)
@@ -296,7 +319,10 @@ class solarchip_base(pl.LightningModule):
                 loss_dict = self.forward_full_memory(batch, optimize=False)
         for k, v in loss_dict.items():
             self.log(f'test/{k}', v, logger=True, on_epoch=True, sync_dist=True)
+            if 'rec_loss' in k:
+                rec_loss += v
         self.log('test_loss', loss_dict['loss'], logger=True, on_epoch=True, sync_dist=True)
+        self.log('test_rec_loss', rec_loss, logger=True, on_epoch=True, sync_dist=True)
 
     def log_images(self, batch, log_input=True, log_rec=True, log_latent=False):
         # log images for each modal
@@ -375,11 +401,20 @@ class solarchip_mergeaia(solarchip_base):
                     int_ctr_loss += int_ctr_loss_tmp
                     del int_ctr_loss_tmp
                 del z_aia
-        cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1)
-        pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1)
-        int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1)
-        total_loss = rec_loss + self.cls_ctr_weight * self.norm_loss(cls_ctr_loss) + self.pat_ctr_weight * self.norm_loss(pat_ctr_loss) + self.int_ctr_weight * self.norm_loss(int_ctr_loss)
-        total_loss_item = rec_loss.item() + self.cls_ctr_weight * cls_ctr_loss.item() + self.pat_ctr_weight * pat_ctr_loss.item() + self.int_ctr_weight * int_ctr_loss.item()
+            cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1)
+            pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1)
+            int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1)
+        total_loss = rec_loss
+        total_loss_item = rec_loss.item()
+        if self.cls_ctr_weight > 0:
+            total_loss += self.cls_ctr_weight * self.norm_loss(cls_ctr_loss)
+            total_loss_item += self.cls_ctr_weight * cls_ctr_loss.item()
+        if self.pat_ctr_weight > 0:
+            total_loss += self.pat_ctr_weight * self.norm_loss(pat_ctr_loss)
+            total_loss_item += self.pat_ctr_weight * pat_ctr_loss.item()
+        if self.int_ctr_weight > 0:
+            total_loss += self.int_ctr_weight * self.norm_loss(int_ctr_loss)
+            total_loss_item += self.int_ctr_weight * int_ctr_loss.item()
         del rec_loss, cls_ctr_loss, pat_ctr_loss, int_ctr_loss
         loss_dict['hmi/total_loss'] = total_loss_item
         if optimize:
@@ -416,8 +451,17 @@ class solarchip_mergeaia(solarchip_base):
             cls_ctr_loss = cls_ctr_loss / (len(self.id_to_modal)-1)
             pat_ctr_loss = pat_ctr_loss / (len(self.id_to_modal)-1)
             int_ctr_loss = int_ctr_loss / (len(self.id_to_modal)-1)
-            total_loss = rec_loss + self.cls_ctr_weight * self.norm_loss(cls_ctr_loss) + self.pat_ctr_weight * self.norm_loss(pat_ctr_loss) + self.int_ctr_weight * self.norm_loss(int_ctr_loss)
-            total_loss_item = rec_loss.item() + self.cls_ctr_weight * cls_ctr_loss.item() + self.pat_ctr_weight * pat_ctr_loss.item() + self.int_ctr_weight * int_ctr_loss.item()
+            total_loss = rec_loss
+            total_loss_item = rec_loss.item()
+            if self.cls_ctr_weight > 0:
+                total_loss += self.cls_ctr_weight * self.norm_loss(cls_ctr_loss)
+                total_loss_item += self.cls_ctr_weight * cls_ctr_loss.item()
+            if self.pat_ctr_weight > 0:
+                total_loss += self.pat_ctr_weight * self.norm_loss(pat_ctr_loss)
+                total_loss_item += self.pat_ctr_weight * pat_ctr_loss.item()
+            if self.int_ctr_weight > 0:
+                total_loss += self.int_ctr_weight * self.norm_loss(int_ctr_loss)
+                total_loss_item += self.int_ctr_weight * int_ctr_loss.item()
             del z_aia, rec_loss, cls_ctr_loss, pat_ctr_loss, int_ctr_loss
             loss_dict[f'{modal}/total_loss'] = total_loss_item
             total_loss_aia += total_loss
