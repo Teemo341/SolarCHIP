@@ -2,7 +2,10 @@ from functools import partial
 import importlib
 
 import torch
-import pytorch_lightning as pl
+try: 
+    import lightning.pytorch as pl
+except ImportError:
+    import pytorch_lightning as pl
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data._utils.collate import default_collate
 

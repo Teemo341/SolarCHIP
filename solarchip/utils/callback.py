@@ -9,10 +9,16 @@ import numpy as np
 import torch
 import torchvision
 from torchvision.utils import save_image
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import Callback, LearningRateMonitor
-from pytorch_lightning.utilities.rank_zero import rank_zero_only
-from pytorch_lightning.utilities import rank_zero_info
+try:
+    import lightning.pytorch as pl
+    from lightning.pytorch.callbacks import Callback, LearningRateMonitor
+    from lightning.pytorch.utilities.rank_zero import rank_zero_only
+    from lightning.pytorch.utilities import rank_zero_info
+except ImportError:
+    import pytorch_lightning as pl
+    from pytorch_lightning.callbacks import Callback, LearningRateMonitor
+    from pytorch_lightning.utilities.rank_zero import rank_zero_only
+    from pytorch_lightning.utilities import rank_zero_info
 
 class SetupCallback(Callback):
     def __init__(self, resume, now, logdir, ckptdir, cfgdir, config, lightning_config):
@@ -31,7 +37,7 @@ class SetupCallback(Callback):
                 start_time = datetime.now()
                 print(f"Summoning checkpoint saving in {self.ckptdir}")
                 ckpt_path = os.path.join(self.ckptdir, "last_state_dict.ckpt")
-                torch.cuda.empty_cache()
+                _get_torch_device_module(trainer.strategy.root_device).empty_cache()
                 model_state_dict = trainer.model.state_dict()
                 torch.save(model_state_dict, ckpt_path)
                 # trainer.save_checkpoint(ckpt_path)
@@ -70,18 +76,30 @@ class SetupCallback(Callback):
                 # except FileNotFoundError:
                 #     pass
 
+def _get_torch_device_module(device: torch.device):
+    """Return the appropriate torch device module (torch.cuda or torch.musa) for the given device."""
+    if device.type == "cuda":
+        return torch.cuda
+    elif device.type == "musa":
+        return torch.musa
+    else:
+        raise ValueError(f"Unsupported device type: {device.type}. Expected 'cuda' or 'musa'.")
+
+
 class CUDACallback(Callback):
     # see https://github.com/SeanNaren/minGPT/blob/master/mingpt/callback.py
     def on_train_epoch_start(self, trainer, pl_module):
         # Reset the memory use counter
-        torch.cuda.reset_peak_memory_stats(trainer.strategy.root_device.index)
-        torch.cuda.synchronize(trainer.strategy.root_device.index)
+        device_mod = _get_torch_device_module(trainer.strategy.root_device)
+        device_mod.reset_peak_memory_stats(trainer.strategy.root_device.index)
+        device_mod.synchronize(trainer.strategy.root_device.index)
         self.start_time = time.time()
 
     def on_train_epoch_end(self, trainer, pl_module):
-        torch.cuda.synchronize(trainer.strategy.root_device.index)
-        max_memory = torch.cuda.max_memory_allocated(trainer.strategy.root_device.index) / 2 ** 20
-        reserved_memory = torch.cuda.memory_reserved(trainer.strategy.root_device.index) / 2 ** 20
+        device_mod = _get_torch_device_module(trainer.strategy.root_device)
+        device_mod.synchronize(trainer.strategy.root_device.index)
+        max_memory = device_mod.max_memory_allocated(trainer.strategy.root_device.index) / 2 ** 20
+        reserved_memory = device_mod.memory_reserved(trainer.strategy.root_device.index) / 2 ** 20
         epoch_time = time.time() - self.start_time
 
         try:

@@ -4,8 +4,12 @@ import numpy as np
 import torch
 import torchvision
 from PIL import Image
-from pytorch_lightning.callbacks import Callback
-from pytorch_lightning.utilities.rank_zero import rank_zero_only
+try:
+    from lightning.pytorch.callbacks import Callback
+    from lightning.pytorch.utilities.rank_zero import rank_zero_only
+except ImportError:
+    from pytorch_lightning.callbacks import Callback
+    from pytorch_lightning.utilities.rank_zero import rank_zero_only
 
 
 class ImageLogger(Callback):

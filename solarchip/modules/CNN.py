@@ -1,6 +1,9 @@
 import torch
 import torch.nn as nn
-import pytorch_lightning as pl
+try:
+    import lightning.pytorch as pl
+except ImportError:
+    import pytorch_lightning as pl
 
 from auxiliary.ldm.modules.diffusionmodules.model import Encoder, Decoder
 from auxiliary.clip.model import AttentionPool2d

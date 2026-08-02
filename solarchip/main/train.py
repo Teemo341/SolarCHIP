@@ -3,9 +3,14 @@ import argparse
 import datetime, os, sys, glob
 
 from omegaconf import OmegaConf
-from pytorch_lightning.trainer import Trainer
-from pytorch_lightning import seed_everything
-from pytorch_lightning.loggers import WandbLogger
+try:
+    from lightning.pytorch.trainer import Trainer
+    from lightning.pytorch import seed_everything
+    from lightning.pytorch.loggers import WandbLogger
+except ImportError:
+    from pytorch_lightning.trainer import Trainer
+    from pytorch_lightning import seed_everything
+    from pytorch_lightning.loggers import WandbLogger
 
 from solarchip.utils.util import instantiate_from_config, TrainerSetup
 

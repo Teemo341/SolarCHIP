@@ -5,7 +5,10 @@ from typing import Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import pytorch_lightning as pl
+try:
+    import lightning.pytorch as pl
+except ImportError:
+    import pytorch_lightning as pl
 
 from auxiliary.clip.model import VisionTransformer as clipvit
 from auxiliary.clip.model import LayerNorm, Transformer

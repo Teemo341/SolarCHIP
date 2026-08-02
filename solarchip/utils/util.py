@@ -4,7 +4,10 @@ import importlib
 from omegaconf import OmegaConf
 from packaging import version
 
-import pytorch_lightning as pl
+try:
+    import lightning.pytorch as pl
+except ImportError:
+    import pytorch_lightning as pl
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -48,7 +51,11 @@ class TrainerSetup:
         if not "devices" in trainer_config:
             # if 'strategy' in trainer_config:
             #     del trainer_config['strategy']
-            trainer_config['accelerator'] = 'gpu' if torch.cuda.is_available() else 'cpu'
+            # if torch.cuda.is_available():
+            #     trainer_config['accelerator'] = 'gpu'
+            # elif torch.musa.is_available():
+            #     trainer_config['accelerator'] = 'musa'
+            trainer_config['accelerator'] = 'gpu'
             trainer_config['devices'] = "auto"
         else:
             trainer_config['accelerator'] = 'gpu'
