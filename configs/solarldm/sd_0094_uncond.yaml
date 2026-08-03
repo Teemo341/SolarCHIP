@@ -1,20 +1,20 @@
 # ============================================================
-# SolarLDM Unconditional: 先训一个高质量无条件 hmi 生成模型,
+# SolarLDM Unconditional: 先训一个高质量无条件 0094 生成模型,
 # 作为后续 ControlNet 训练的冻结 backbone。
 #
 # 关键设计:
 #   conditioning_key: None → 纯无条件扩散, UNet 结构和 ControlNet 主干一致
-#   UNet 无 spatial_transformer → 和 ctrl_0094-hmi.yaml 的 UNet 完全匹配
+#   UNet 无 spatial_transformer → 和 ctrl_xxx.yaml 的 UNet 完全匹配
 #
-# 训练完后，把 checkpoint 路径通过 ctrl_0094-hmi.yaml 的
+# 训练完后，把 checkpoint 路径通过对应的 ctrl config 的
 # model.params.sd_backbone_ckpt 传入；SolarControl 会严格初始化主 UNet 和 ControlNet encoder。
 # ============================================================
 
 model:
   target: downstream.ldm.SolarLDM.SolarLDM
   params:
-    first_stage_key: 'hmi'
-    cond_stage_key:  'hmi'      # 接口占位；真正无条件模式不会构造或编码 cond stage
+    first_stage_key: '0094'
+    cond_stage_key:  '0094'      # 接口占位；真正无条件模式不会构造或编码 cond stage
 
     learning_rate: 5e-5
     image_size: 32
@@ -47,8 +47,8 @@ model:
     solarchip_config:
       target: solarchip.SolarCHIP.solarchip_base
       params:
-        # 无条件模型只需要 HMI AE；checkpoint 中其它模态权重会作为 unexpected keys 忽略。
-        modal_list: ['hmi']
+        # 无条件模型只需要一个模态的 AE；checkpoint 中其它模态权重会作为 unexpected keys 忽略。
+        modal_list: ['0094']
         save_memory: True
         ckpt_path: checkpoints/solarchip_CNN_AE_base_zscore_2026-07-10T18-03-45/checkpoints/epoch=000187_val_loss=1.0262.ckpt
         base_model:
@@ -70,7 +70,7 @@ model:
               dropout: 0.0
         loss_config: null
 
-    # ---- UNet (必须和 ctrl_0094-hmi.yaml 的 unet_config 完全一致) ----
+    # ---- UNet (必须和对应 ctrl config 的 unet_config 完全一致) ----
     unet_config:
       target: auxiliary.ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
@@ -94,7 +94,7 @@ data:
     train:
       target: data.dataset.SolarDataset.multimodal_dataset
       params:
-        modal_list: ['hmi']
+        modal_list: ['0094']
         enhance_type: ['log1p', 'zscore']
         load_imgs: False
         torch_augment_type:
@@ -108,7 +108,7 @@ data:
     validation:
       target: data.dataset.SolarDataset.multimodal_dataset
       params:
-        modal_list: ['hmi']
+        modal_list: ['0094']
         enhance_type: ['log1p', 'zscore']
         load_imgs: False
         torch_augment_type:

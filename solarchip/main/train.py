@@ -154,7 +154,7 @@ if __name__ == "__main__":
             cfg_fname = os.path.split(opt.base[0])[-1]
             model_name = os.path.split(opt.base[0])[0].split("/")[-1]
             cfg_name = os.path.splitext(cfg_fname)[0]
-            name = model_name+"_" + cfg_name + "_"
+            name = model_name+"/" + cfg_name + "/"
         else:
             name = ""
         nowname = name + now

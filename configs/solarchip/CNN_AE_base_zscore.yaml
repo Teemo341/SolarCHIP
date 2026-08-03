@@ -64,7 +64,7 @@ data:
           - 360
         time_interval: 
           - 5000
-          - 5400
+          - 6000
         time_step: 10
 
 
