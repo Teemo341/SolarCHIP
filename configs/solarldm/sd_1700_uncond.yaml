@@ -48,7 +48,7 @@ model:
       target: solarchip.SolarCHIP.solarchip_base
       params:
         # 无条件模型只需要一个模态的 AE；checkpoint 中其它模态权重会作为 unexpected keys 忽略。
-        modal_list: ['1700']
+        modal_list: ['hmi', '1700']
         save_memory: True
         ckpt_path: checkpoints/solarchip/CNN_AE_base_zscore/checkpoints/epoch=000187_val_loss=1.0262.ckpt
         base_model:
@@ -94,7 +94,7 @@ data:
     train:
       target: data.dataset.SolarDataset.multimodal_dataset
       params:
-        modal_list: ['1700']
+        modal_list: ['hmi', '1700']
         enhance_type: ['log1p', 'zscore']
         load_imgs: False
         torch_augment_type:
@@ -108,7 +108,7 @@ data:
     validation:
       target: data.dataset.SolarDataset.multimodal_dataset
       params:
-        modal_list: ['1700']
+        modal_list: ['hmi', '1700']
         enhance_type: ['log1p', 'zscore']
         load_imgs: False
         torch_augment_type:
