@@ -49,7 +49,7 @@ model:
     only_mid_control: False     # False: 全部 13 层 zero-conv 注入; True: 仅 middle block (消融用)
     # 训练时必须通过 CLI 覆盖为新训练的 HMI unconditional checkpoint 路径：
     # model.params.sd_backbone_ckpt=logs/<hmi-uncond-run>/checkpoints/last.ckpt
-    sd_backbone_ckpt: checkpoints/solarldm_sd_hmi_uncond_2026-07-17T11-08-46/checkpoints/epoch=000191.ckpt
+    sd_backbone_ckpt: checkpoints/solarldm/sd_hmi_uncond/checkpoints/epoch=000191.ckpt
     sd_backbone_use_ema: True   # 使用源 SD checkpoint 的 EMA 权重初始化
     sd_locked: True             # True: 完整冻结预训练主 UNet，只训练 ControlNet
     cond_drop_prob: 0.1         # 训练时 10% 概率把 hint 置零, 推理时可做 CFG
@@ -61,7 +61,7 @@ model:
         modal_list: ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']
         save_memory: True
         # !!! 与 sd_0094-hmi.yaml 相同的 zscore 预训练 checkpoint !!!
-        ckpt_path: checkpoints/solarchip_CNN_AE_base_zscore_2026-07-10T18-03-45/checkpoints/epoch=000187_val_loss=1.0262.ckpt
+        ckpt_path: checkpoints/solarchip/CNN_AE_base_zscore/checkpoints/epoch=000187_val_loss=1.0262.ckpt
         base_model:
           target: solarchip.modules.CNN.AE_CNN
           params:

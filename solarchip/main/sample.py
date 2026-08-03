@@ -5,7 +5,7 @@ and save them using the same SolarImageLogger format as during training.
 Usage:
     python -m solarchip.main.sample \
         --config configs/solarchip/CNN_AE_base_zscore.yaml \
-        --ckpt logs/solarchip_CNN_AE_base_zscore_2026-07-10T18-03-45/checkpoints/epoch=000187_val_loss=1.0262.ckpt \
+        --ckpt logs/solarchip/CNN_AE_base_zscore/checkpoints/epoch=000187_val_loss=1.0262.ckpt \
         --outdir logs/sample_ae_output \
         --num_batches 5 \
         --max_images 4
