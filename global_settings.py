@@ -5,7 +5,10 @@ DATA_ROOT = "/mnt/zj-data/data/ssy/data/sol"
 
 
 if torch.cuda.is_available():
-    gpu_name = torch.cuda.get_device_name(0)
+    try:
+        gpu_name = torch.cuda.get_device_name(0)
+    except Exception as e:
+        gpu_name = "Unknown"
     if "A40" in gpu_name or "A100" in gpu_name:
         torch.set_float32_matmul_precision('high') # highest, high, medium
         print(f'device is {gpu_name}, set float32_matmul_precision to high')
