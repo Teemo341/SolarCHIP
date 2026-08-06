@@ -4,29 +4,25 @@ import torch
 # "No backend type associated with device type musa"
 # gloo 后端不支持 musa 设备类型，且系统使用 MCCL 而非 NCCL。
 # _InfiniteBarrier 只需 CPU 同步，在 MUSA 上回退使用默认 group 的 barrier()
-from lightning.fabric.utilities import distributed as _lf_dist
-from datetime import timedelta as _timedelta
-_orig_barrier_enter = _lf_dist._InfiniteBarrier.__enter__
-_orig_barrier_exit = _lf_dist._InfiniteBarrier.__exit__
+if hasattr(torch, 'musa') and torch.musa.is_available():
+    from lightning.fabric.utilities import distributed as _lf_dist
+    _orig_barrier_enter = _lf_dist._InfiniteBarrier.__enter__
+    _orig_barrier_exit = _lf_dist._InfiniteBarrier.__exit__
 
-def _patched_barrier_enter(self):
-    if torch.distributed.is_initialized():
-        try:
-            self.group = torch.distributed.new_group(backend="gloo", timeout=_timedelta(days=10000))
-        except RuntimeError as e:
-            if 'musa' in str(e).lower():
-                # MUSA 上 gloo new_group 失败，使用默认 group 的 barrier 替代
-                torch.distributed.barrier()
-                self.group = None
-            else:
-                raise
+    def _patched_barrier_enter(self):
+        # 跳过 Gloo new_group：Docker 容器中 Gloo TCP 通信在 C++ 层直接崩溃，
+        # Python try/except 无法捕获。_InfiniteBarrier 只需 CPU 同步，
+        # 直接用主进程组(MCCL)的 barrier 即可。
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
+            self.group = None
 
-def _patched_barrier_exit(self, *args, **kwargs):
-    if hasattr(self, 'group') and self.group is not None:
-        torch.distributed.destroy_process_group(self.group)
+    def _patched_barrier_exit(self, *args, **kwargs):
+        if hasattr(self, 'group') and self.group is not None:
+            torch.distributed.destroy_process_group(self.group)
 
-_lf_dist._InfiniteBarrier.__enter__ = _patched_barrier_enter
-_lf_dist._InfiniteBarrier.__exit__ = _patched_barrier_exit
+    _lf_dist._InfiniteBarrier.__enter__ = _patched_barrier_enter
+    _lf_dist._InfiniteBarrier.__exit__ = _patched_barrier_exit
 
 # Monkey-patch: MUSA 设备上 Lightning DDP 使用 backend="nccl" 初始化进程组，
 # 但系统只有 MCCL（Moore Threads Collective Communication Library）

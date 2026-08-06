@@ -2,6 +2,18 @@
 import argparse
 import datetime, os, sys, glob
 
+import torch
+import numpy as np
+# PyTorch >=2.6 默认 torch.load(weights_only=True)，旧 checkpoint 中的 numpy 类型
+# 不在默认白名单会报 UnpicklingError。此处将所有常见 numpy 类型一次性加入安全列表。
+_safe_numpy = [np.core.multiarray.scalar, np.dtype, np.ndarray]
+if hasattr(np, 'dtypes'):
+    _safe_numpy.extend(
+        getattr(np.dtypes, n) for n in dir(np.dtypes)
+        if isinstance(getattr(np.dtypes, n), type) and issubclass(getattr(np.dtypes, n), np.dtype)
+    )
+torch.serialization.add_safe_globals(_safe_numpy)
+
 from omegaconf import OmegaConf
 try:
     from lightning.pytorch.trainer import Trainer
