@@ -49,7 +49,7 @@ model:
     only_mid_control: False     # False: 全部 13 层 zero-conv 注入; True: 仅 middle block (消融用)
     # 训练时必须通过 CLI 覆盖为新训练的 HMI unconditional checkpoint 路径：
     # model.params.sd_backbone_ckpt=logs/<hmi-uncond-run>/checkpoints/last.ckpt
-    sd_backbone_ckpt: checkpoints/solarldm/sd_0171_uncond/checkpoints/epoch=000728.ckpt
+    sd_backbone_ckpt: checkpoints/solarldm/sd_0171_uncond/checkpoints/last.ckpt
     sd_backbone_use_ema: True   # 使用源 SD checkpoint 的 EMA 权重初始化
     sd_locked: True             # True: 完整冻结预训练主 UNet，只训练 ControlNet
     cond_drop_prob: 0.1         # 训练时 10% 概率把 hint 置零, 推理时可做 CFG
@@ -157,12 +157,12 @@ lightning:
       params:
         log_on_batch_idx: False
         # 第 N、2N、3N... 个 train epoch 各绘制一次 train/validation 图像。
-        every_n_train_epochs: 4
+        every_n_train_epochs: 40
         max_images: 2
         log_images_kwargs:
-          # ddim_steps: 100
+          ddim_steps: 100
           # ddim_eta: 0.0
-          ddim_steps: null
+          # ddim_steps: null
           unconditional_guidance_scale: 3.0
     
     early_stop:
