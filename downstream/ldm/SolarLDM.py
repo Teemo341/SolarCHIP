@@ -633,6 +633,16 @@ class SolarLDM(LatentDiffusion):
             predict_cids=predict_cids,
             force_not_quantize=force_not_quantize,
         )
+    
+    # ------------------------------------------------------------------
+    # on_validation_epoch_end: 将 callback_metrics 中所有 val/xxx 复制为 val_xxx，
+    # 供 ModelCheckpoint filename 使用（避免 / 被解释为子目录）。
+    # Model 的钩子在 Callback 之前执行，所以 ModelCheckpoint 能看到这些新 key。
+    # ------------------------------------------------------------------
+    def on_validation_epoch_end(self):
+        for key, value in list(self.trainer.callback_metrics.items()):
+            if key.startswith('val/') or key.startswith('train/'):
+                self.trainer.callback_metrics[key.replace('/', '_')] = value
 
     # ------------------------------------------------------------------
     # log_images:沿用 SolarCHIP 的 'visualization/<modal>/<kind>' 命名

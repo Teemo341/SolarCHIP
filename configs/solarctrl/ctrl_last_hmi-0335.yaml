@@ -174,7 +174,7 @@ lightning:
   modelcheckpoint:
     params:
       monitor: val/loss_simple
-      filename: '{epoch:06}'
+      filename: '{epoch:06d}_{val_loss_simple:.4f}'
       mode: min 
       save_last: True
       save_top_k: 3

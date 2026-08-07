@@ -1,6 +1,6 @@
 # ============================================================
-# SolarControl: ControlNet-style 条件扩散, 0131 → hmi
-# 基于 sd_0131-hmi.yaml 的超参, 将 concat 条件改为 ControlNet 分支注入。
+# SolarControl: ControlNet-style 条件扩散, 1700 → hmi
+# 基于 sd_1700-hmi.yaml 的超参, 将 concat 条件改为 ControlNet 分支注入。
 #
 # 与 concat 版本的关键差异:
 #   1. cond 不再沿 channel 拼到 z_t, 而是通过 ControlNet 分支逐层注入 skip 连接
@@ -9,7 +9,7 @@
 #   4. 开启 hint dropout, 推理时可做 CFG
 #
 # 运行示例:
-#   python -m solarchip.main.train -b ./configs/solarldm/ctrl_0131-hmi.yaml \
+#   python -m solarchip.main.train -b ./configs/solarldm/ctrl_1700-hmi.yaml \
 #       model.params.sd_backbone_ckpt=logs/<hmi-uncond-run>/checkpoints/last.ckpt
 # ============================================================
 
@@ -17,10 +17,10 @@ model:
   target: downstream.ldm.SolarControl.SolarControl
   params:
     # ---- SolarCHIP custom keys (与 concat 版一致) ----
-    first_stage_key: '0131'      # 要生成的模态
+    first_stage_key: '1700'      # 要生成的模态
     cond_stage_key:  'hmi'     # 提供控制信号的模态
 
-    # ---- LDM 基础超参 (与 sd_0131-hmi.yaml 保持一致) ----
+    # ---- LDM 基础超参 (与 sd_1700-hmi.yaml 保持一致) ----
     learning_rate: 5e-5
     image_size: 32              # latent 边长 = 1024 / 32
     channels: 32                # latent 通道数 = AE_CNN.ddconfig.z_channels
@@ -49,7 +49,7 @@ model:
     only_mid_control: False     # False: 全部 13 层 zero-conv 注入; True: 仅 middle block (消融用)
     # 训练时必须通过 CLI 覆盖为新训练的 HMI unconditional checkpoint 路径：
     # model.params.sd_backbone_ckpt=logs/<hmi-uncond-run>/checkpoints/last.ckpt
-    sd_backbone_ckpt: checkpoints/solarldm/sd_0131_uncond/checkpoints/last.ckpt
+    sd_backbone_ckpt: checkpoints/solarldm/sd_1700_uncond/checkpoints/epoch=000951.ckpt
     sd_backbone_use_ema: True   # 使用源 SD checkpoint 的 EMA 权重初始化
     sd_locked: True             # True: 完整冻结预训练主 UNet，只训练 ControlNet
     cond_drop_prob: 0.1         # 训练时 10% 概率把 hint 置零, 推理时可做 CFG
@@ -58,9 +58,9 @@ model:
     solarchip_config:
       target: solarchip.SolarCHIP.solarchip_base
       params:
-        modal_list: ['hmi','0094','0131','0131','0193','0211','0304','0335','1600','1700','4500']
+        modal_list: ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']
         save_memory: True
-        # !!! 与 sd_0131-hmi.yaml 相同的 zscore 预训练 checkpoint !!!
+        # !!! 与 sd_1700-hmi.yaml 相同的 zscore 预训练 checkpoint !!!
         ckpt_path: checkpoints/solarchip/CNN_AE_base_zscore/checkpoints/epoch=000187_val_loss=1.0262.ckpt
         base_model:
           target: solarchip.modules.CNN.AE_CNN
@@ -124,7 +124,7 @@ data:
     train:
       target: data.dataset.SolarDataset.multimodal_dataset
       params:
-        modal_list: ['hmi','0131']
+        modal_list: ['hmi','1700']
         enhance_type: ['log1p', 'zscore']
         load_imgs: False
         torch_augment_type:
@@ -138,7 +138,7 @@ data:
     validation:
       target: data.dataset.SolarDataset.multimodal_dataset
       params:
-        modal_list: ['hmi','0131']
+        modal_list: ['hmi','1700']
         enhance_type: ['log1p', 'zscore']
         load_imgs: False
         torch_augment_type:
