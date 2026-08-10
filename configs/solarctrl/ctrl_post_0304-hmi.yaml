@@ -1,6 +1,6 @@
 # ============================================================
-# SolarControl: ControlNet-style 条件扩散, 4500 → hmi
-# 基于 sd_4500-hmi.yaml 的超参, 将 concat 条件改为 ControlNet 分支注入。
+# SolarControl: ControlNet-style 条件扩散, 0304 → hmi
+# 基于 sd_0094-hmi.yaml 的超参, 将 concat 条件改为 ControlNet 分支注入。
 #
 # 与 concat 版本的关键差异:
 #   1. cond 不再沿 channel 拼到 z_t, 而是通过 ControlNet 分支逐层注入 skip 连接
@@ -9,7 +9,7 @@
 #   4. 开启 hint dropout, 推理时可做 CFG
 #
 # 运行示例:
-#   python -m solarchip.main.train -b ./configs/solarldm/ctrl_4500-hmi.yaml \
+#   python -m solarchip.main.train -b ./configs/solarldm/ctrl_0304-hmi.yaml \
 #       model.params.sd_backbone_ckpt=logs/<hmi-uncond-run>/checkpoints/last.ckpt
 # ============================================================
 
@@ -17,11 +17,12 @@ model:
   target: downstream.ldm.SolarControl.SolarControl
   params:
     # ---- SolarCHIP custom keys (与 concat 版一致) ----
-    first_stage_key: '4500'      # 要生成的模态
-    cond_stage_key:  'hmi'     # 提供控制信号的模态
+    ckpt_path: checkpoints/solarctrl/ctrl_0304-hmi/checkpoints/epoch=000563_val_loss_simple=0.0353.ckpt
+    first_stage_key: 'hmi'      # 要生成的模态
+    cond_stage_key:  '0304'     # 提供控制信号的模态
 
-    # ---- LDM 基础超参 (与 sd_4500-hmi.yaml 保持一致) ----
-    learning_rate: 5e-5
+    # ---- LDM 基础超参 (与 sd_0094-hmi.yaml 保持一致) ----
+    learning_rate: 1e-5
     image_size: 32              # latent 边长 = 1024 / 32
     channels: 32                # latent 通道数 = AE_CNN.ddconfig.z_channels
     timesteps: 1000
@@ -32,26 +33,26 @@ model:
     loss_type: l2
     parameterization: eps
     monitor: val/loss_simple
-    use_ema: False              # 主 UNet 已冻结；DDPM 的 EMA 只跟踪主 UNet，必须关闭
+    use_ema: False              # Post-training: EMA 关闭, 直接使用训练权重做推理
     scale_by_std: False               # 旧的单标量 normalization，保持关闭
 
     # ---- LR scheduler: warmup + cosine decay ----
     scheduler_config:
       target: auxiliary.ldm.lr_scheduler.LambdaWarmUpCosineScheduler
       params:
-        warm_up_steps: 3080        # 前 1000 步线性 warmup
+        warm_up_steps: 1540        # 前 1000 步线性 warmup
         lr_start: 0.01             # warmup 起始 multiplier (base_lr × 0.01 = 1e-6)
         lr_min: 0.1                # 最终 multiplier (base_lr × 0.1 = 1e-5)
         lr_max: 1.0                # warmup 峰值 multiplier (base_lr × 1.0 = 1e-4)
-        max_decay_steps: 61600     # 余弦衰减的总步数，按你的总训练步数调整
+        max_decay_steps: 30800     # 余弦衰减的总步数，按你的总训练步数调整
 
     # ---- ControlNet 相关 ----
     only_mid_control: False     # False: 全部 13 层 zero-conv 注入; True: 仅 middle block (消融用)
-    # 训练时必须通过 CLI 覆盖为新训练的 HMI unconditional checkpoint 路径：
-    # model.params.sd_backbone_ckpt=logs/<hmi-uncond-run>/checkpoints/last.ckpt
-    sd_backbone_ckpt: checkpoints/solarldm/sd_4500_uncond/checkpoints/last.ckpt
+    # Post-training: SD backbone 直接从 ControlNet checkpoint 中加载,
+    # 不再单独指定 sd_backbone_ckpt (ControlNet 训练时 SD 已冻结, 权重一致)
+    sd_backbone_ckpt: null
     sd_backbone_use_ema: True   # 使用源 SD checkpoint 的 EMA 权重初始化
-    sd_locked: True             # True: 完整冻结预训练主 UNet，只训练 ControlNet
+    sd_locked: False             # True: 完整冻结预训练主 UNet，只训练 ControlNet
     cond_drop_prob: 0.1         # 训练时 10% 概率把 hint 置零, 推理时可做 CFG
 
     # ---- 11-模态 SolarCHIP wrapper (与 concat 版同一份 AE ckpt) ----
@@ -60,8 +61,7 @@ model:
       params:
         modal_list: ['hmi','0094','0131','0171','0193','0211','0304','0335','1600','1700','4500']
         save_memory: True
-        # !!! 与 sd_4500-hmi.yaml 相同的 zscore 预训练 checkpoint !!!
-        ckpt_path: checkpoints/solarchip/CNN_AE_base_zscore/checkpoints/epoch=000187_val_loss=1.0262.ckpt
+        ckpt_path: null
         base_model:
           target: solarchip.modules.CNN.AE_CNN
           params:
@@ -124,7 +124,7 @@ data:
     train:
       target: data.dataset.SolarDataset.multimodal_dataset
       params:
-        modal_list: ['hmi','4500']
+        modal_list: ['hmi','0304']
         enhance_type: ['log1p', 'zscore']
         load_imgs: False
         torch_augment_type:
@@ -138,7 +138,7 @@ data:
     validation:
       target: data.dataset.SolarDataset.multimodal_dataset
       params:
-        modal_list: ['hmi','4500']
+        modal_list: ['hmi','0304']
         enhance_type: ['log1p', 'zscore']
         load_imgs: False
         torch_augment_type:
@@ -165,11 +165,11 @@ lightning:
           # ddim_steps: null
           unconditional_guidance_scale: 3.0
     
-    # early_stop:
-    #   params:
-    #     monitor: val/loss_simple
-    #     patience: 800
-    #     mode: min
+    early_stop:
+      params:
+        monitor: val/loss_simple
+        patience: 400
+        mode: min
 
   modelcheckpoint:
     params:
@@ -184,7 +184,7 @@ lightning:
   trainer:
     strategy: ddp
     num_sanity_val_steps: 0      # latent stats 在 on_train_start 完整预计算后再做验证
-    max_epochs: 1600
+    max_epochs: 800
     precision: bf16-mixed
     log_every_n_steps: 4
     # devices: [0]

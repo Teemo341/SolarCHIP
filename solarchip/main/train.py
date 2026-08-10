@@ -235,3 +235,8 @@ if __name__ == "__main__":
         print("Failed to parse config files. Please check your syntax.")
         import traceback
         traceback.print_exc()
+    finally:
+        # Clean up distributed process group to avoid hang on exit
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+            print("Distributed process group destroyed.")

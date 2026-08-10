@@ -152,6 +152,11 @@ class SolarControl(SolarLDM):
         # 强制 conditioning_key=None:cond 不走 DiffusionWrapper 的 concat/crossattn,
         # 全部从 ControlNet 分支注入(本类自己重写的 apply_model 接管)。
         kwargs["conditioning_key"] = None
+
+        # 保存 ckpt_path: super().__init__ 中 DDPM 会消费它去加载主 UNet/AE,
+        # 但此时 control_model 尚未创建, ControlNet 权重会丢失。
+        # 因此在 control_model 创建后需要手动补加载。
+        _ckpt_path = kwargs.get("ckpt_path", None)
         super().__init__(*args, **kwargs)
 
         self.control_model = instantiate_from_config(control_stage_config)
@@ -160,11 +165,40 @@ class SolarControl(SolarLDM):
         self.cond_drop_prob = float(cond_drop_prob)
         self.sd_backbone_ckpt = sd_backbone_ckpt
         self.sd_backbone_use_ema = bool(sd_backbone_use_ema)
+
+        # 补加载: 从 ckpt_path 中恢复 ControlNet 分支权重
+        _controlnet_from_ckpt = (
+            _ckpt_path is not None and Path(_ckpt_path).is_file()
+        )
+        if _controlnet_from_ckpt:
+            self._load_controlnet_from_ckpt(_ckpt_path)
+
         if self.sd_backbone_ckpt is not None:
-            self.initialize_from_sd_checkpoint(
-                self.sd_backbone_ckpt,
-                use_ema=self.sd_backbone_use_ema,
-            )
+            if _controlnet_from_ckpt:
+                # ControlNet 已从 ckpt_path 加载训练好的权重 (含 zero-conv),
+                # 此时只加载 SD backbone 的 UNet + latent stats,
+                # 跳过 encoder 拷贝和 zero-conv 清零, 避免覆盖已训练的 ControlNet。
+                state_dict = self._load_checkpoint_state_dict(
+                    self.sd_backbone_ckpt
+                )
+                unet_tensors, ema_parameters = (
+                    self._load_main_unet_from_sd_state(
+                        state_dict, use_ema=self.sd_backbone_use_ema
+                    )
+                )
+                latent_stats = self._load_first_stage_latent_stats(state_dict)
+                print(
+                    f"[SolarControl] 从 {self.sd_backbone_ckpt} 加载 SD backbone: "
+                    f"UNet tensors={unet_tensors}, EMA params={ema_parameters}, "
+                    f"latent stats={latent_stats} "
+                    f"(ControlNet 保留自 ckpt_path, 不做重新初始化)"
+                )
+            else:
+                # 首次训练: 完整初始化 (encoder 拷贝 + zero-conv 清零)
+                self.initialize_from_sd_checkpoint(
+                    self.sd_backbone_ckpt,
+                    use_ema=self.sd_backbone_use_ema,
+                )
         self._set_sd_backbone_trainable(not self.sd_locked)
 
         # ControlNet 默认输出 = len(zero_convs) + 1 (middle_block_out)
@@ -213,6 +247,31 @@ class SolarControl(SolarLDM):
             target.load_state_dict(source.state_dict(), strict=True)
         except RuntimeError as error:
             raise RuntimeError(f"ControlNet {label} 与主 UNet 结构不一致") from error
+
+    def _load_controlnet_from_ckpt(self, path):
+        """从完整的 SolarControl checkpoint 中提取并加载 ControlNet 分支权重。
+
+        由于 __init__ 中 control_model 在 super().__init__ (含 DDPM.init_from_ckpt)
+        之后才创建, ControlNet 权重不会在首次加载时恢复。此方法在 control_model
+        创建后被调用, 补加载 ControlNet 分支的参数。
+        """
+        state_dict = self._load_checkpoint_state_dict(path)
+        prefix = "control_model."
+        control_state = {
+            key[len(prefix):]: value
+            for key, value in state_dict.items()
+            if key.startswith(prefix)
+        }
+        if not control_state:
+            print(f"[SolarControl] 警告: checkpoint {path} 中未找到 control_model.* 权重,"
+                  f" ControlNet 分支将保持随机初始化。")
+            return
+        missing, unexpected = self.control_model.load_state_dict(
+            control_state, strict=False
+        )
+        print(f"[SolarControl] 从 {path} 加载 ControlNet 权重: "
+              f"{len(control_state)} 个参数, "
+              f"missing={len(missing)}, unexpected={len(unexpected)}")
 
     def _load_main_unet_from_sd_state(self, state_dict, use_ema):
         diffusion_model = self.model.diffusion_model
