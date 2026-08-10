@@ -165,11 +165,11 @@ lightning:
           # ddim_steps: null
           unconditional_guidance_scale: 3.0
     
-    early_stop:
-      params:
-        monitor: val/loss_simple
-        patience: 800
-        mode: min
+    # early_stop:
+    #   params:
+    #     monitor: val/loss_simple
+    #     patience: 800
+    #     mode: min
 
   modelcheckpoint:
     params:
