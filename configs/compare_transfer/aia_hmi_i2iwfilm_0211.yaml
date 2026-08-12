@@ -1,0 +1,95 @@
+# Sayez et al. I2IwFiLM comparison: AIA 0211 -> HMI
+# Evidence status: algorithm transfer; the paper's direct AIA input was 0304.
+# Run: python -m solarchip.main.train -b configs/compare_transfer/aia_hmi_i2iwfilm_0211.yaml
+
+model:
+  target: compare.transfer.aia_to_hmi.i2iwfilm.module.SayezI2IwFiLM
+  params:
+    source_modal: '0211'
+    target_modal: 'hmi'
+    input_channels: 1
+    output_channels: 1
+    base_channels: 32
+    channel_multipliers: [1, 2, 4, 8, 8]
+    guidance_dim: 256
+    guidance_base_channels: 64
+    guidance_residual_blocks: 6
+    guidance_unshuffle_factor: 4
+    source_mlp_hidden_dims: [512, 512, 512]
+    stage1_epochs: 100
+    max_epochs: 200
+    learning_rate: 1.0e-4
+    weight_decay: 1.0e-4
+    lambda_reconstruction: 1.0
+    lambda_guidance: 1.0
+    minimum_learning_rate: 1.0e-7
+    output_activation: identity
+    hmi_mean: -0.0033644122878536808
+    hmi_std: 1.4462468177923982
+    metric_max_log_value: 20.0
+    hmi_ssim_clip_gauss: 1500.0
+    strong_field_threshold_gauss: 100.0
+    ssim_window_size: 11
+
+data:
+  target: data.build.DataModuleFromConfig
+  params:
+    batch_size: 8
+    num_workers: 8
+    wrap: False
+    train:
+      target: data.dataset.SolarDataset.multimodal_dataset
+      params:
+        modal_list: ['hmi', '0211']
+        enhance_type: ['log1p', 'zscore']
+        load_imgs: False
+        torch_augment_type:
+          - 1024
+          - 0.5
+          - 360
+        time_interval:
+          - 0
+          - 5000
+        time_step: 1
+    validation:
+      target: data.dataset.SolarDataset.multimodal_dataset
+      params:
+        modal_list: ['hmi', '0211']
+        enhance_type: ['log1p', 'zscore']
+        load_imgs: False
+        torch_augment_type:
+          - 1024
+          - 0.5
+          - 360
+        time_interval:
+          - 5000
+          - 6000
+        time_step: 1
+
+lightning:
+  callbacks:
+    image_logger:
+      target: solarchip.utils.callback.SolarImageLogger
+      params:
+        log_on_batch_idx: False
+        # 第 N、2N、3N... 个 train epoch 各绘制一次 train/validation 图像。
+        every_n_train_epochs: 20
+        max_images: 2
+
+  modelcheckpoint:
+    params:
+      monitor: val/loss
+      filename: '{epoch:06}'
+      mode: min
+      save_last: true
+      save_top_k: 1
+      every_n_epochs: 1
+      # Full checkpoints retain both Adam states for resume.
+      save_weights_only: False
+
+  trainer:
+    strategy: ddp_find_unused_parameters_true
+    num_sanity_val_steps: 0
+    max_epochs: 800
+    precision: bf16-mixed
+    log_every_n_steps: 4

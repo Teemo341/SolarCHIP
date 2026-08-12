@@ -1,0 +1,86 @@
+# Galvez et al. SDOML-CNN comparison: HMI -> AIA 0171
+# Evidence status: paper output channel; project adapts 3-to-9 vector task to 1-to-1 LOS task
+# Run from repository root:
+# python -m solarchip.main.train -b configs/compare_transfer/hmi_aia_sdoml_cnn_0171.yaml
+
+model:
+  target: compare.transfer.hmi_to_aia.sdoml_cnn.module.GalvezSDOMLCNN
+  params:
+    source_modal: 'hmi'
+    target_modal: '0171'
+    input_channels: 1
+    output_channels: 1
+    hidden_channels: 128
+    # The paper compares 3/7/11 layers; 11 is the strongest aggregate baseline.
+    num_layers: 11
+    learning_rate: 1.0e-3
+    momentum: 0.99
+    weight_decay: 1.0e-8
+    lr_step_size: 5
+    lr_gamma: 0.1
+    target_mean: 4.058454606964953
+    target_std: 2.0019955472124473
+    metric_max_log_value: 20.0
+
+data:
+  target: data.build.DataModuleFromConfig
+  params:
+    batch_size: 16              # ControlNet 分支增加 ~1.5x 参数, 适当降低 batch
+    num_workers: 4
+    wrap: False
+    train:
+      target: data.dataset.SolarDataset.multimodal_dataset
+      params:
+        modal_list: ['hmi','0171']
+        enhance_type: ['log1p', 'zscore']
+        load_imgs: False
+        torch_augment_type:
+          - 1024
+          - 0.5
+          - 360
+        time_interval:
+          - 0
+          - 5000
+        time_step: 1
+    validation:
+      target: data.dataset.SolarDataset.multimodal_dataset
+      params:
+        modal_list: ['hmi','0171']
+        enhance_type: ['log1p', 'zscore']
+        load_imgs: False
+        torch_augment_type:
+          - 1024
+          - 0.5
+          - 360
+        time_interval:
+          - 5000
+          - 6000
+        time_step: 1
+
+lightning:
+  callbacks:
+    image_logger:
+      target: solarchip.utils.callback.SolarImageLogger
+      params:
+        log_on_batch_idx: False
+        # 第 N、2N、3N... 个 train epoch 各绘制一次 train/validation 图像。
+        every_n_train_epochs: 40
+        max_images: 2
+
+  modelcheckpoint:
+    params:
+      monitor: val/loss
+      filename: '{epoch:06}'
+      mode: min
+      save_last: true
+      save_top_k: 1
+      every_n_epochs: 1
+      # Full checkpoints retain both Adam states for resume.
+      save_weights_only: False
+
+  trainer:
+    strategy: ddp
+    num_sanity_val_steps: 0
+    max_epochs: 1600
+    precision: bf16-mixed
+    log_every_n_steps: 4
