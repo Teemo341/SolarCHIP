@@ -1,0 +1,96 @@
+# Dash et al. Pix2PixHD comparison: HMI -> AIA 0094
+# Evidence status: algorithm transfer; not evaluated in Dash et al.
+# Run from repository root:
+# python -m solarchip.main.train -b configs/compare/hmi_to_aia/dash_pix2pixhd/hmi_to_0094.yaml
+
+model:
+  target: compare.transfer.hmi_to_aia.dash_pix2pixhd.module.DashPix2PixHD
+  params:
+    source_modal: 'hmi'
+    target_modal: '0094'
+    input_channels: 1
+    output_channels: 1
+    generator_channels: 32
+    discriminator_channels: 64
+    n_downsample: 4
+    n_residual: 9
+    discriminator_layers: 3
+    n_discriminators: 2
+    norm_type: instance
+    padding_type: reflection
+    # SolarDataset uses unbounded z-scores; original RGB code used tanh on [-1, 1].
+    output_activation: identity
+    learning_rate: 2.0e-4
+    beta1: 0.5
+    beta2: 0.999
+    lambda_feature_matching: 10.0
+    # The paper's Pix2PixHD objective reports GAN + feature matching, no pixel L1.
+    lambda_l1: 0.0
+    decay_start_epoch: 100
+    max_epochs: 200
+    target_mean: 0.7777174413423921
+    target_std: 0.6687824480747059
+    metric_max_log_value: 20.0
+
+data:
+  target: data.build.DataModuleFromConfig
+  params:
+    batch_size: 16              # ControlNet 分支增加 ~1.5x 参数, 适当降低 batch
+    num_workers: 4
+    wrap: False
+    train:
+      target: data.dataset.SolarDataset.multimodal_dataset
+      params:
+        modal_list: ['hmi','0094']
+        enhance_type: ['log1p', 'zscore']
+        load_imgs: False
+        torch_augment_type:
+          - 1024
+          - 0.5
+          - 360
+        time_interval:
+          - 0
+          - 5000
+        time_step: 1
+    validation:
+      target: data.dataset.SolarDataset.multimodal_dataset
+      params:
+        modal_list: ['hmi','0094']
+        enhance_type: ['log1p', 'zscore']
+        load_imgs: False
+        torch_augment_type:
+          - 1024
+          - 0.5
+          - 360
+        time_interval:
+          - 5000
+          - 6000
+        time_step: 1
+
+lightning:
+  callbacks:
+    image_logger:
+      target: solarchip.utils.callback.SolarImageLogger
+      params:
+        log_on_batch_idx: False
+        # 第 N、2N、3N... 个 train epoch 各绘制一次 train/validation 图像。
+        every_n_train_epochs: 20
+        max_images: 2
+
+  modelcheckpoint:
+    params:
+      monitor: val/loss
+      filename: '{epoch:06}'
+      mode: min
+      save_last: true
+      save_top_k: 1
+      every_n_epochs: 1
+      # Full checkpoints retain both Adam states for resume.
+      save_weights_only: False
+
+  trainer:
+    strategy: ddp_find_unused_parameters_true
+    num_sanity_val_steps: 0
+    max_epochs: 800
+    precision: bf16-mixed
+    log_every_n_steps: 4
