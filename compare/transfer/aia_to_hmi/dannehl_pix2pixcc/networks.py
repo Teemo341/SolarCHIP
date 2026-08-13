@@ -3,6 +3,10 @@
 The implementation is self-contained, but follows the architecture in the
 authors' archived ``pix2pixCC2`` release: a 4-down/9-residual/4-up generator
 and one 70x70 PatchGAN discriminator that exposes intermediate features.
+
+For MUSA training, InstanceNorm is implemented using equivalent per-channel
+GroupNorm. This avoids the NativeBatchNormBackward kernel used internally by
+PyTorch InstanceNorm on some backends.
 """
 
 from __future__ import annotations
@@ -14,34 +18,77 @@ import torch.nn.functional as F
 from torch import nn
 
 
+def _stable_instance_norm(channels: int) -> nn.Module:
+    """Return InstanceNorm-equivalent GroupNorm.
+
+    GroupNorm with one group per channel normalizes every sample and channel
+    independently over its spatial dimensions. This is equivalent to
+    InstanceNorm without affine parameters or running statistics, while
+    avoiding MUSA's NativeBatchNormBackward implementation.
+    """
+
+    return nn.GroupNorm(
+        num_groups=channels,
+        num_channels=channels,
+        eps=1e-4,
+        affine=False,
+    )
+
+
 def _normalization(name: str):
     name = name.lower()
-    if name in {"instance", "instancenorm", "instancenorm2d"}:
-        return partial(nn.InstanceNorm2d, affine=False, track_running_stats=False)
-    if name in {"batch", "batchnorm", "batchnorm2d"}:
-        return partial(nn.BatchNorm2d, affine=True, track_running_stats=True)
+
+    if name in {
+        "instance",
+        "instancenorm",
+        "instancenorm2d",
+        "stable_instance",
+        "group_instance",
+    }:
+        return _stable_instance_norm
+
+    if name in {
+        "batch",
+        "batchnorm",
+        "batchnorm2d",
+    }:
+        return partial(
+            nn.BatchNorm2d,
+            affine=True,
+            track_running_stats=True,
+            eps=1e-4,
+        )
+
     if name in {"identity", "none"}:
         return lambda _channels: nn.Identity()
+
     raise ValueError(f"Unsupported normalization: {name}")
 
 
 def _padding(name: str):
     name = name.lower()
+
     if name in {"replication", "replicate"}:
         return nn.ReplicationPad2d
+
     if name in {"reflection", "reflect"}:
         return nn.ReflectionPad2d
+
     if name in {"zero", "zeros"}:
         return nn.ZeroPad2d
+
     raise ValueError(f"Unsupported padding: {name}")
 
 
 def _output_activation(name: str) -> nn.Module:
     name = name.lower()
+
     if name in {"identity", "linear", "none"}:
         return nn.Identity()
+
     if name == "tanh":
         return nn.Tanh()
+
     raise ValueError(f"Unsupported output activation: {name}")
 
 
@@ -55,15 +102,33 @@ class Mish(nn.Module):
 class ResidualBlock(nn.Module):
     """Two-convolution residual block from ``pix2pixCC2``."""
 
-    def __init__(self, channels: int, norm, pad) -> None:
+    def __init__(
+        self,
+        channels: int,
+        norm,
+        pad,
+    ) -> None:
         super().__init__()
+
         self.block = nn.Sequential(
             pad(1),
-            nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=0),
+            nn.Conv2d(
+                channels,
+                channels,
+                kernel_size=3,
+                stride=1,
+                padding=0,
+            ),
             norm(channels),
             Mish(),
             pad(1),
-            nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=0),
+            nn.Conv2d(
+                channels,
+                channels,
+                kernel_size=3,
+                stride=1,
+                padding=0,
+            ),
             norm(channels),
         )
 
@@ -88,22 +153,39 @@ class Pix2PixCCGenerator(nn.Module):
         output_activation: str = "identity",
     ) -> None:
         super().__init__()
+
         if input_channels < 1 or output_channels < 1:
-            raise ValueError("input_channels and output_channels must be positive")
+            raise ValueError(
+                "input_channels and output_channels must be positive"
+            )
+
         if base_channels < 1:
             raise ValueError("base_channels must be positive")
+
         if n_downsample < 1:
             raise ValueError("n_downsample must be positive")
+
         if n_residual < 0:
             raise ValueError("n_residual must be non-negative")
+
         if input_kernel_size < 1 or input_kernel_size % 2 == 0:
-            raise ValueError("input_kernel_size must be a positive odd integer")
-        if downsample_kernel_size < 1 or downsample_kernel_size % 2 == 0:
-            raise ValueError("downsample_kernel_size must be a positive odd integer")
+            raise ValueError(
+                "input_kernel_size must be a positive odd integer"
+            )
+
+        if (
+            downsample_kernel_size < 1
+            or downsample_kernel_size % 2 == 0
+        ):
+            raise ValueError(
+                "downsample_kernel_size must be a positive odd integer"
+            )
 
         norm = _normalization(norm_type)
         pad = _padding(padding_type)
+
         channels = base_channels
+
         layers: list[nn.Module] = [
             pad(input_kernel_size // 2),
             nn.Conv2d(
@@ -132,7 +214,14 @@ class Pix2PixCCGenerator(nn.Module):
             )
             channels *= 2
 
-        layers.extend(ResidualBlock(channels, norm, pad) for _ in range(n_residual))
+        layers.extend(
+            ResidualBlock(
+                channels,
+                norm,
+                pad,
+            )
+            for _ in range(n_residual)
+        )
 
         for _ in range(n_downsample):
             layers.extend(
@@ -151,15 +240,21 @@ class Pix2PixCCGenerator(nn.Module):
             )
             channels //= 2
 
-        # The released code fixes the final convolution at 7x7 and has no
-        # activation. SolarCHIP exposes an identity/tanh switch explicitly.
+        # The released implementation fixes the final convolution at 7x7 and
+        # has no output activation. SolarCHIP exposes identity/tanh explicitly.
         layers.extend(
             [
                 pad(3),
-                nn.Conv2d(channels, output_channels, kernel_size=7, padding=0),
+                nn.Conv2d(
+                    channels,
+                    output_channels,
+                    kernel_size=7,
+                    padding=0,
+                ),
                 _output_activation(output_activation),
             ]
         )
+
         self.model = nn.Sequential(*layers)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
@@ -175,11 +270,17 @@ class PatchDiscriminator(nn.Module):
         base_channels: int = 64,
     ) -> None:
         super().__init__()
+
         if input_channels < 1 or base_channels < 1:
-            raise ValueError("input_channels and base_channels must be positive")
+            raise ValueError(
+                "input_channels and base_channels must be positive"
+            )
 
         def activation() -> nn.Module:
-            return nn.LeakyReLU(0.2, inplace=True)
+            return nn.LeakyReLU(
+                negative_slope=0.2,
+                inplace=True,
+            )
 
         self.blocks = nn.ModuleList(
             [
@@ -201,7 +302,7 @@ class PatchDiscriminator(nn.Module):
                         stride=2,
                         padding=1,
                     ),
-                    nn.InstanceNorm2d(base_channels * 2),
+                    _stable_instance_norm(base_channels * 2),
                     activation(),
                 ),
                 nn.Sequential(
@@ -212,7 +313,7 @@ class PatchDiscriminator(nn.Module):
                         stride=2,
                         padding=1,
                     ),
-                    nn.InstanceNorm2d(base_channels * 4),
+                    _stable_instance_norm(base_channels * 4),
                     activation(),
                 ),
                 nn.Sequential(
@@ -223,7 +324,7 @@ class PatchDiscriminator(nn.Module):
                         stride=1,
                         padding=1,
                     ),
-                    nn.InstanceNorm2d(base_channels * 8),
+                    _stable_instance_norm(base_channels * 8),
                     activation(),
                 ),
                 nn.Sequential(
@@ -238,12 +339,17 @@ class PatchDiscriminator(nn.Module):
             ]
         )
 
-    def forward(self, inputs: torch.Tensor) -> list[torch.Tensor]:
+    def forward(
+        self,
+        inputs: torch.Tensor,
+    ) -> list[torch.Tensor]:
         features = []
         output = inputs
+
         for block in self.blocks:
             output = block(output)
             features.append(output)
+
         return features
 
 
@@ -251,12 +357,26 @@ def initialize_pix2pixcc(module: nn.Module) -> None:
     """Apply the released model's normal-0.02 convolution initialization."""
 
     for layer in module.modules():
-        if isinstance(layer, (nn.Conv2d, nn.ConvTranspose2d)):
-            nn.init.normal_(layer.weight, mean=0.0, std=0.02)
+        if isinstance(
+            layer,
+            (nn.Conv2d, nn.ConvTranspose2d),
+        ):
+            nn.init.normal_(
+                layer.weight,
+                mean=0.0,
+                std=0.02,
+            )
+
             if layer.bias is not None:
                 nn.init.zeros_(layer.bias)
+
         elif isinstance(layer, nn.BatchNorm2d):
             if layer.weight is not None:
-                nn.init.normal_(layer.weight, mean=1.0, std=0.02)
+                nn.init.normal_(
+                    layer.weight,
+                    mean=1.0,
+                    std=0.02,
+                )
+
             if layer.bias is not None:
                 nn.init.zeros_(layer.bias)

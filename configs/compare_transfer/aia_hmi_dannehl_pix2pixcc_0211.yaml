@@ -20,7 +20,7 @@ model:
     padding_type: replication
     # SolarDataset emits unbounded z-scores, so the final layer must stay linear.
     output_activation: identity
-    learning_rate: 2.0e-4
+    learning_rate: 5e-5
     beta1: 0.5
     beta2: 0.999
     lambda_lsgan: 2.0
@@ -93,5 +93,5 @@ lightning:
     strategy: ddp_find_unused_parameters_true
     num_sanity_val_steps: 0      # latent stats 在 on_train_start 完整预计算后再做验证
     max_epochs: 400
-    precision: bf16-mixed
+    precision: 32-true
     log_every_n_steps: 4
