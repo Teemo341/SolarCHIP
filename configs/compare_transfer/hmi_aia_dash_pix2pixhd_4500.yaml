@@ -89,4 +89,4 @@ lightning:
     num_sanity_val_steps: 0
     max_epochs: 800
     precision: bf16-mixed
-    log_every_n_steps: 4
+    log_every_n_steps: 1
