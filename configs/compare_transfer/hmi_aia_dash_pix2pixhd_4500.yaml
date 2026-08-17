@@ -19,7 +19,7 @@ model:
     norm_type: instance
     padding_type: reflection
     output_activation: identity
-    learning_rate: 2.0e-4
+    learning_rate: 5e-5
     beta1: 0.5
     beta2: 0.999
     lambda_feature_matching: 10.0
@@ -87,6 +87,6 @@ lightning:
   trainer:
     strategy: ddp_find_unused_parameters_true
     num_sanity_val_steps: 0
-    max_epochs: 800
+    max_epochs: 200
     precision: bf16-mixed
     log_every_n_steps: 1

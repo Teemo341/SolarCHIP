@@ -15,9 +15,9 @@ from torch import nn
 def _normalization(name: str):
     name = name.lower()
     if name in {"instance", "instancenorm", "instancenorm2d"}:
-        return partial(nn.InstanceNorm2d, affine=False, track_running_stats=False)
+        return partial(nn.InstanceNorm2d, affine=False, track_running_stats=False,eps=1e-2)
     if name in {"batch", "batchnorm", "batchnorm2d"}:
-        return partial(nn.BatchNorm2d, affine=True, track_running_stats=True)
+        return partial(nn.BatchNorm2d, affine=True, track_running_stats=True, eps=1e-2)
     if name in {"none", "identity"}:
         return lambda _channels: nn.Identity()
     raise ValueError(f"Unsupported normalization: {name}")
