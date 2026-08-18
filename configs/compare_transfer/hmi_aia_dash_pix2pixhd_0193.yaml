@@ -26,8 +26,8 @@ model:
     lambda_feature_matching: 10.0
     # The paper's Pix2PixHD objective reports GAN + feature matching, no pixel L1.
     lambda_l1: 0.0
-    decay_start_epoch: 100
-    max_epochs: 200
+    decay_start_epoch: 50
+    max_epochs: 100
     target_mean: 4.2085857338462915
     target_std: 2.031354106628024
     metric_max_log_value: 20.0
@@ -74,7 +74,7 @@ lightning:
       params:
         log_on_batch_idx: False
         # 第 N、2N、3N... 个 train epoch 各绘制一次 train/validation 图像。
-        every_n_train_epochs: 20
+        every_n_train_epochs: 10
         max_images: 2
 
   modelcheckpoint:
@@ -91,6 +91,6 @@ lightning:
   trainer:
     strategy: ddp_find_unused_parameters_true
     num_sanity_val_steps: 0
-    max_epochs: 200
+    max_epochs: 100
     precision: bf16-mixed
     log_every_n_steps: 1

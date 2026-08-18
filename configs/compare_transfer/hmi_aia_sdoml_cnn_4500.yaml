@@ -62,7 +62,7 @@ lightning:
       target: solarchip.utils.callback.SolarImageLogger
       params:
         log_on_batch_idx: False
-        every_n_train_epochs: 40
+        every_n_train_epochs: 20
         max_images: 2
 
   modelcheckpoint:
@@ -78,6 +78,6 @@ lightning:
   trainer:
     strategy: ddp
     num_sanity_val_steps: 0
-    max_epochs: 1600
+    max_epochs: 200
     precision: bf16-mixed
     log_every_n_steps: 1
