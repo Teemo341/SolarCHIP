@@ -1,8 +1,10 @@
 import numpy as np
+import torch
 import matplotlib.pyplot as plt
 from datetime import datetime
 
 
+import sunpy.visualization.colormaps.cm  # noqa: F401  注册 sdoaia/hmimag 等官方色表
 import sunpy.map
 from astropy.io import fits
 
@@ -51,6 +53,33 @@ CDELT_DICT = {
 }
 
 
+# ----------------------------------------------------------------------
+# 固定显示范围（针对【原始/物理量】数据，保证跨图可比）
+#
+# 注意：不要用 data/modal_stats.json 的 mean/std —— 那是 log1p+zscore 训练空间
+# 的统计，而 solarplot 画的是反归一化后的原始物理量（HMI 高斯 / AIA DN）。
+# 这里的范围由原始数据分位数标定（HMI 取实测极值附近 ±2000；AIA 取 p99.9
+# 附近，用来压掉宇宙线/坏像素等离群点），所有图共用同一把尺子，
+# 图与图之间的亮度/对比度才能互相比较。
+#
+# HMI 磁图：以 0 为中心对称（发散色系白 = 0 磁场）
+# AIA：0 到上限
+# ----------------------------------------------------------------------
+DISPLAY_LIMITS = {
+    'hmi':  (-2000.0, 2000.0),
+    '0094': (0.0, 40.0),
+    '0131': (0.0, 150.0),
+    '0171': (0.0, 2500.0),
+    '0193': (0.0, 3000.0),
+    '0211': (0.0, 2000.0),
+    '0304': (0.0, 500.0),
+    '0335': (0.0, 80.0),
+    '1600': (0.0, 500.0),
+    '1700': (0.0, 2500.0),
+    '4500': (0.0, 16000.0),
+}
+
+
 def get_header(modal: str,
                time: str):
     header = fits.Header()
@@ -96,24 +125,36 @@ def format_timestamp(time_int: int) -> str:
     return formatted
 
 
-def solarplot(data: np.array,
+def solarplot(data,
               modal: str,
               time: str,
               save_path: str,
-              figsize = (10,8)
-              ):
+              figsize=(10, 8),
+              vmin=None,
+              vmax=None):
+    if torch.is_tensor(data):
+        data = data.detach().cpu().numpy()
+    data = np.asarray(data)
+
     header = get_header(modal, time)
     mymap = sunpy.map.Map((data, header))
 
     plt.figure(figsize=figsize)
 
+    # 未显式给出时，使用该模态的固定显示范围（跨图可比）；
+    # 也可以手动传 vmin/vmax 覆盖默认值。
+    if vmin is None or vmax is None:
+        limits = DISPLAY_LIMITS.get(modal)
+        if limits is not None:
+            vmin = limits[0] if vmin is None else vmin
+            vmax = limits[1] if vmax is None else vmax
+
     if modal == 'hmi':
-        # HMI 磁图：正负值对称，使用发散色系
-        vmax = np.max(np.abs(data))
-        mymap.plot(cmap='RdBu_r', vmin=-vmax, vmax=vmax)
+        # HMI 磁图：hmimag 发散色系 + 固定对称范围（白 = 0 磁场）
+        mymap.plot(cmap='hmimag', vmin=vmin, vmax=vmax)
     else:
         # AIA：SunPy 根据 INSTRUME+WAVELNTH 自动匹配 sdoaia 官方色表
-        mymap.plot()
+        mymap.plot(vmin=vmin, vmax=vmax)
 
     # plt.colorbar()
     plt.savefig(save_path)
