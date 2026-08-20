@@ -138,12 +138,22 @@ def _ssim_index(
     return score.flatten(start_dim=1).mean(dim=1)
 
 
+def _mean_abs_spatial_gradient(value: torch.Tensor) -> torch.Tensor:
+    """Mean first-order spatial variation for blockiness diagnostics."""
+
+    value = value.float()
+    horizontal = (value[..., :, 1:] - value[..., :, :-1]).abs().mean()
+    vertical = (value[..., 1:, :] - value[..., :-1, :]).abs().mean()
+    return 0.5 * (horizontal + vertical)
+
+
 class SayezI2IwFiLM(pl.LightningModule):
     """Two-stage, non-adversarial AIA-to-HMI image translation.
 
-    Stage 1 learns a paired source/target guidance encoder and guided U-Net.
-    Stage 2 uses the stopped-gradient paired vector as supervision for a
-    source-only guidance predictor, while continuing U-Net reconstruction.
+    Stage 1 learns a paired source/target guidance encoder and guided U-Net,
+    while the source-only predictor tracks the stopped-gradient paired vector.
+    Stage 2 freezes the paired path and generator in the training graph and
+    continues source-only guidance distillation.
     Validation, testing, ``forward``, and image logging always use only source.
     """
 
@@ -166,6 +176,10 @@ class SayezI2IwFiLM(pl.LightningModule):
         weight_decay: float = 1e-4,
         lambda_reconstruction: float = 1.0,
         lambda_guidance: float = 1.0,
+        reconstruction_loss_type: str = "l1",
+        strong_field_weight: float = 1.0,
+        strong_field_loss_fraction: float = 0.5,
+        smooth_l1_beta: float = 1.0,
         minimum_learning_rate: float = 1e-7,
         output_activation: str = "identity",
         hmi_mean: float = -0.0033644122878536808,
@@ -191,8 +205,29 @@ class SayezI2IwFiLM(pl.LightningModule):
             raise ValueError("HMI scale parameters must be positive")
         if lambda_reconstruction < 0 or lambda_guidance < 0:
             raise ValueError("loss weights cannot be negative")
+        reconstruction_loss_type = reconstruction_loss_type.lower()
+        if reconstruction_loss_type not in {
+            "l1",
+            "l2",
+            "smooth_l1",
+            "weighted_smooth_l1",
+            "balanced_smooth_l1",
+        }:
+            raise ValueError(
+                "reconstruction_loss_type must be one of "
+                "'l1', 'l2', 'smooth_l1', 'weighted_smooth_l1', or "
+                "'balanced_smooth_l1'"
+            )
+        if strong_field_weight < 1.0:
+            raise ValueError("strong_field_weight must be at least 1")
+        if not 0.0 < strong_field_loss_fraction < 1.0:
+            raise ValueError("strong_field_loss_fraction must lie between 0 and 1")
+        if smooth_l1_beta <= 0:
+            raise ValueError("smooth_l1_beta must be positive")
         if learning_rate <= 0 or minimum_learning_rate < 0:
             raise ValueError("learning rates must be non-negative and base LR positive")
+        if strong_field_threshold_gauss <= 0:
+            raise ValueError("strong_field_threshold_gauss must be positive")
 
         self.save_hyperparameters()
         self.source_modal = source_modal
@@ -205,6 +240,10 @@ class SayezI2IwFiLM(pl.LightningModule):
         self.weight_decay = float(weight_decay)
         self.lambda_reconstruction = float(lambda_reconstruction)
         self.lambda_guidance = float(lambda_guidance)
+        self.reconstruction_loss_type = reconstruction_loss_type
+        self.strong_field_weight = float(strong_field_weight)
+        self.strong_field_loss_fraction = float(strong_field_loss_fraction)
+        self.smooth_l1_beta = float(smooth_l1_beta)
         self.minimum_learning_rate = float(minimum_learning_rate)
         self.hmi_mean = float(hmi_mean)
         self.hmi_std = float(hmi_std)
@@ -273,6 +312,75 @@ class SayezI2IwFiLM(pl.LightningModule):
             raise ValueError("source and target must be aligned image pairs")
         return source, target
 
+    def _strong_field_mask(self, target: torch.Tensor) -> torch.Tensor:
+        """Return the HMI |B| threshold mask without an expensive expm1."""
+
+        threshold_log = math.log1p(self.strong_field_threshold_gauss)
+        positive_threshold = (threshold_log - self.hmi_mean) / self.hmi_std
+        negative_threshold = (-threshold_log - self.hmi_mean) / self.hmi_std
+        target = target.float()
+        return (target >= positive_threshold) | (target <= negative_threshold)
+
+    def _reconstruction_components(
+        self,
+        prediction: torch.Tensor,
+        target: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute the configured objective plus collapse-diagnostic terms."""
+
+        prediction = prediction.float()
+        target = target.float()
+        absolute_error = (prediction - target).abs()
+        raw_l1 = absolute_error.mean()
+        strong_mask = self._strong_field_mask(target)
+        strong_count = strong_mask.sum()
+        strong_l1 = (
+            absolute_error * strong_mask.to(dtype=absolute_error.dtype)
+        ).sum() / strong_count.clamp_min(1).to(dtype=absolute_error.dtype)
+        strong_fraction = strong_mask.float().mean()
+
+        if self.reconstruction_loss_type == "l1":
+            objective = raw_l1
+        elif self.reconstruction_loss_type == "l2":
+            objective = F.mse_loss(prediction, target)
+        else:
+            per_pixel = F.smooth_l1_loss(
+                prediction,
+                target,
+                reduction="none",
+                beta=self.smooth_l1_beta,
+            )
+            if self.reconstruction_loss_type == "weighted_smooth_l1":
+                weights = 1.0 + (self.strong_field_weight - 1.0) * strong_mask.to(
+                    dtype=per_pixel.dtype
+                )
+                objective = (weights * per_pixel).sum() / weights.sum().clamp_min(1.0)
+            elif self.reconstruction_loss_type == "balanced_smooth_l1":
+                # A fixed per-pixel multiplier still lets the quiet Sun dominate
+                # when strong-field pixels are below one percent of the image.
+                # Average the two regions separately so their contribution is
+                # independent of the batch's strong-field pixel frequency.
+                quiet_mask = ~strong_mask
+                quiet_count = quiet_mask.sum()
+                strong_objective = (
+                    per_pixel * strong_mask.to(dtype=per_pixel.dtype)
+                ).sum() / strong_count.clamp_min(1).to(dtype=per_pixel.dtype)
+                quiet_objective = (
+                    per_pixel * quiet_mask.to(dtype=per_pixel.dtype)
+                ).sum() / quiet_count.clamp_min(1).to(dtype=per_pixel.dtype)
+                balanced = (
+                    1.0 - self.strong_field_loss_fraction
+                ) * quiet_objective + self.strong_field_loss_fraction * strong_objective
+                objective = torch.where(
+                    strong_count > 0,
+                    balanced,
+                    quiet_objective,
+                )
+            else:
+                objective = per_pixel.mean()
+
+        return objective, raw_l1, strong_l1, strong_fraction
+
     def training_step(
         self, batch: dict[str, torch.Tensor], batch_idx: int
     ) -> torch.Tensor:
@@ -282,7 +390,11 @@ class SayezI2IwFiLM(pl.LightningModule):
         if self.in_stage_one:
             pair_guidance = self.pair_guidance_encoder(source, target)
             prediction = self.generator(source, pair_guidance)
-            guidance_loss = prediction.new_zeros(())
+            # The teacher remains governed only by reconstruction: detaching its
+            # vector lets the deployable predictor track it from the beginning
+            # without pulling the paired representation toward an easier target.
+            source_guidance = self.source_guidance_predictor(source)
+            guidance_loss = F.l1_loss(source_guidance, pair_guidance.detach())
             stage = 1.0
         else:
             # The paired encoder is a fixed teacher during Stage 2.  Parameters
@@ -291,15 +403,28 @@ class SayezI2IwFiLM(pl.LightningModule):
             with torch.no_grad():
                 pair_guidance = self.pair_guidance_encoder(source, target).detach()
             source_guidance = self.source_guidance_predictor(source)
-            prediction = self.generator(source, source_guidance)
             guidance_loss = F.l1_loss(source_guidance, pair_guidance)
+            # Match the authors' released Stage-2 configuration: distil the
+            # source-only guidance predictor while keeping the Stage-1 teacher
+            # and image generator fixed.  The detached prediction below exists
+            # only for diagnostics and cannot update the generator.
+            with torch.no_grad():
+                prediction = self.generator(source, source_guidance.detach())
             stage = 2.0
 
-        reconstruction_loss = F.l1_loss(prediction, target)
-        loss = (
-            self.lambda_reconstruction * reconstruction_loss
-            + self.lambda_guidance * guidance_loss
-        )
+        (
+            reconstruction_loss,
+            reconstruction_l1,
+            strong_field_l1,
+            strong_field_fraction,
+        ) = self._reconstruction_components(prediction, target)
+        if self.in_stage_one:
+            loss = (
+                self.lambda_reconstruction * reconstruction_loss
+                + self.lambda_guidance * guidance_loss
+            )
+        else:
+            loss = self.lambda_guidance * guidance_loss
         common = dict(
             on_step=True,
             on_epoch=True,
@@ -308,7 +433,10 @@ class SayezI2IwFiLM(pl.LightningModule):
             batch_size=source.shape[0],
         )
         self.log("train/loss", loss, prog_bar=True, **common)
-        self.log("train/reconstruction_l1", reconstruction_loss, **common)
+        self.log("train/reconstruction_objective", reconstruction_loss, **common)
+        self.log("train/reconstruction_l1", reconstruction_l1, **common)
+        self.log("train/strong_field_l1", strong_field_l1, **common)
+        self.log("train/strong_field_fraction", strong_field_fraction, **common)
         self.log("train/guidance_l1", guidance_loss, **common)
         self.log(
             "train/stage",
@@ -327,18 +455,27 @@ class SayezI2IwFiLM(pl.LightningModule):
         split: str,
     ) -> torch.Tensor:
         source, target = self._paired_batch(batch)
-        paired_teacher_loss = None
-        if self.in_stage_one:
-            # Stage-one validation diagnostic only. It deliberately is not the
-            # checkpoint monitor because this path observes the target image.
-            pair_guidance = self.pair_guidance_encoder(source, target)
-            paired_prediction = self.generator(source, pair_guidance)
-            paired_teacher_loss = F.l1_loss(paired_prediction, target)
+        # Diagnostic teacher path. It observes the target, so these values are
+        # never used as the deployable checkpoint monitor. Keeping them after
+        # the stage transition makes the guidance-distillation gap visible.
+        pair_guidance = self.pair_guidance_encoder(source, target)
+        paired_prediction = self.generator(source, pair_guidance)
+        (
+            paired_teacher_objective,
+            paired_teacher_l1,
+            _,
+            _,
+        ) = self._reconstruction_components(paired_prediction, target)
 
         # Critical evaluation invariant: the checkpoint metric and deployable
         # prediction never use paired guidance.
         prediction = self(source)
-        loss = F.l1_loss(prediction, target)
+        (
+            loss,
+            reconstruction_l1,
+            strong_field_l1,
+            strong_field_fraction,
+        ) = self._reconstruction_components(prediction, target)
 
         prediction_gauss = _inverse_hmi_preprocess(
             prediction,
@@ -357,6 +494,14 @@ class SayezI2IwFiLM(pl.LightningModule):
         mae_gauss = error_gauss.abs().mean()
         pcc = _imagewise_pcc(prediction_gauss, target_gauss)
         ccc = _imagewise_ccc(prediction_gauss, target_gauss)
+        paired_prediction_gauss = _inverse_hmi_preprocess(
+            paired_prediction,
+            self.hmi_mean,
+            self.hmi_std,
+            self.metric_max_log_value,
+        )
+        paired_teacher_pcc = _imagewise_pcc(paired_prediction_gauss, target_gauss)
+        paired_teacher_ccc = _imagewise_ccc(paired_prediction_gauss, target_gauss)
         polarity = _strong_field_polarity_accuracy(
             prediction_gauss,
             target_gauss,
@@ -388,15 +533,73 @@ class SayezI2IwFiLM(pl.LightningModule):
             batch_size=source.shape[0],
         )
         self.log(f"{split}/loss", loss, prog_bar=True, **common)
-        if paired_teacher_loss is not None:
-            self.log(
-                f"{split}/paired_teacher_l1",
-                paired_teacher_loss,
-                **common,
-            )
+        self.log(f"{split}/reconstruction_l1", reconstruction_l1, **common)
+        self.log(f"{split}/strong_field_l1", strong_field_l1, **common)
+        self.log(f"{split}/strong_field_fraction", strong_field_fraction, **common)
+        prediction_std = prediction.float().std()
+        target_std = target.float().std()
+        paired_teacher_std = paired_prediction.float().std()
+        target_gradient = _mean_abs_spatial_gradient(target)
+        prediction_gradient = _mean_abs_spatial_gradient(prediction)
+        paired_teacher_gradient = _mean_abs_spatial_gradient(paired_prediction)
+        prediction_strong_fraction = self._strong_field_mask(prediction).float().mean()
+        paired_teacher_strong_fraction = (
+            self._strong_field_mask(paired_prediction).float().mean()
+        )
+        self.log(f"{split}/prediction_std", prediction_std, **common)
+        self.log(f"{split}/target_std", target_std, **common)
+        self.log(
+            f"{split}/amplitude_ratio",
+            prediction_std / target_std.clamp_min(1e-8),
+            **common,
+        )
+        self.log(
+            f"{split}/prediction_abs_mean",
+            prediction.float().abs().mean(),
+            **common,
+        )
+        self.log(
+            f"{split}/spatial_gradient_ratio",
+            prediction_gradient / target_gradient.clamp_min(1e-8),
+            **common,
+        )
+        self.log(
+            f"{split}/prediction_strong_field_fraction",
+            prediction_strong_fraction,
+            **common,
+        )
+        self.log(f"{split}/paired_teacher_l1", paired_teacher_l1, **common)
+        self.log(
+            f"{split}/paired_teacher_objective",
+            paired_teacher_objective,
+            **common,
+        )
+        self.log(f"{split}/paired_teacher_std", paired_teacher_std, **common)
+        self.log(
+            f"{split}/paired_teacher_spatial_gradient_ratio",
+            paired_teacher_gradient / target_gradient.clamp_min(1e-8),
+            **common,
+        )
+        self.log(
+            f"{split}/paired_teacher_strong_field_fraction",
+            paired_teacher_strong_fraction,
+            **common,
+        )
+        self.log(
+            f"{split}/paired_teacher_amplitude_ratio",
+            paired_teacher_std / target_std.clamp_min(1e-8),
+            **common,
+        )
+        self.log(f"{split}/paired_teacher_pcc", paired_teacher_pcc, **common)
+        self.log(f"{split}/paired_teacher_ccc", paired_teacher_ccc, **common)
         self.log(f"{split}/rmse_gauss", rmse_gauss, **common)
         self.log(f"{split}/pcc", pcc, **common)
         self.log(f"{split}/ccc", ccc, **common)
+        if split == "val":
+            # This is always the deployable source-only path. Stage 1 now trains
+            # its guidance predictor, so a genuinely better early checkpoint is
+            # valid and should not be discarded at the stage boundary.
+            self.log("val/checkpoint_ccc", ccc, **common)
         self.log(f"{split}/physical_mae_gauss", mae_gauss, **common)
         self.log(f"{split}/strong_field_polarity", polarity, **common)
         self.log(f"{split}/delta_ssim", delta_ssim, prog_bar=True, **common)
@@ -424,10 +627,8 @@ class SayezI2IwFiLM(pl.LightningModule):
         minimum_factor = self.minimum_learning_rate / self.learning_rate
 
         def two_stage_cosine(epoch: int) -> float:
-            # The source-only predictor first receives gradients at the Stage
-            # 2 boundary. Restarting the cosine there gives that deployable
-            # path a full learning-rate cycle without rebuilding the optimizer
-            # or changing DDP parameter registration.
+            # Restart at the Stage-2 boundary so the deployable predictor gets a
+            # second full learning-rate cycle while tracking the fixed teacher.
             if epoch < self.stage1_epochs:
                 stage_epoch = epoch
                 stage_length = self.stage1_epochs
@@ -454,8 +655,14 @@ class SayezI2IwFiLM(pl.LightningModule):
     ) -> dict[str, torch.Tensor]:
         source, target = self._paired_batch(batch)
         generated = self(source)
-        return {
+        images = {
             f"visualization/{self.source_modal}/condition": source,
             "visualization/hmi/target": target,
             "visualization/hmi/generated": generated,
         }
+        pair_guidance = self.pair_guidance_encoder(source, target)
+        images["visualization/hmi/generated_paired_teacher"] = self.generator(
+            source,
+            pair_guidance,
+        )
+        return images
