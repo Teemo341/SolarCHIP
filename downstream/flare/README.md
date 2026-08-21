@@ -39,12 +39,12 @@ SDO 并非 2015 年开始工作：NASA 记录的发射日期是 2010-02-11，201
 
 ```bash
 # 下载。能直连 NOAA 时可改为 --transport direct。
-python3 downstream/flare/download_goes_flare_report.py \
+python3 -m downstream.flare.data.download_goes_flare_report \
   --transport auto \
   --start-year 2010
 
 # 生成 date_id 对齐的逐日标签。
-python3 downstream/flare/prepare_flare_labels.py
+python3 -m downstream.flare.data.prepare_flare_labels
 ```
 
 默认规则是一个明确的建模选择：对日历日 D 的 HMI 输入，以耀发 UTC `start_time` 落入 `[D 00:00, D+1 00:00)` 作为“D 当天开始发生”，同日多次耀发取最高 GOES 字母等级。这对应“从 D 日开始后 24 小时内是否启动耀发”的目标，而 NOAA 文件本身按峰值 `time` 正式索引。
@@ -61,7 +61,7 @@ python3 downstream/flare/prepare_flare_labels.py
 如需严格跟随 NOAA Flare Report 的正式峰值时间索引，可改用：
 
 ```bash
-python3 downstream/flare/prepare_flare_labels.py --event-time-column time
+python3 -m downstream.flare.data.prepare_flare_labels --event-time-column time
 ```
 
 输出 `data/flare_daily_labels.csv` 的字段为：
@@ -76,7 +76,7 @@ date,date_id,label,label_name,max_flare_class,max_xrsb_irrad_w_m2,flare_count
 0: 1166, A: 0, B: 1135, C: 2323, M: 1176, X: 152
 ```
 
-原始事件中有 6 条 A 类，但这些日期都有更高等级事件，因此“日最高等级”标签没有 A 样本。另外，GOES-R 自动 flare-summary/detection routine 只检出部分 B 类且不以 A 类为常规检测目标；所以 label 0 不能解释为物理上绝对没有微小耀发。代码仍完整保留 0/A/B/C/M/X 映射，但直接训练六分类时 A 类为空，应先决定保留空输出、把 A 并入 0/B，或改用另一种可靠覆盖 A 类的标注定义。[Machol et al. (2026)](https://doi.org/10.1029/2026JA035181)
+原始事件中有 6 条 A 类，但这些日期都有更高等级事件，因此“日最高等级”标签没有 A 样本。另外，GOES-R 自动 flare-summary/detection routine 只检出部分 B 类且不以 A 类为常规检测目标；所以 label 0 不能解释为物理上绝对没有微小耀发。CSV 始终保留可审计的 0/A/B/C/M/X 原始标签；训练 Dataset 默认通过 `['0AB','C','M','X']` 把无目录事件、A 和 B 合并为一类。[Machol et al. (2026)](https://doi.org/10.1029/2026JA035181)
 
 全目录有 279 个事件的开始日与峰值日跨 UTC 午夜，令 40 个日期的日最高标签在两种策略下不同。用户的 `[5000, 5400)` 区间只有 2024-11-19 受影响：默认 start-day 为 C，peak-day 为 M。标签 sidecar 会记录并校验 `event_time_column`，防止两种语义混用。
 
@@ -86,7 +86,7 @@ date,date_id,label,label_name,max_flare_class,max_xrsb_irrad_w_m2,flare_count
 
 ```yaml
 validation:
-  target: downstream.flare.dataset.FlareDataset
+  target: downstream.flare.data.dataset.FlareDataset
   params:
     modal_list: ['hmi', '0094']
     enhance_type: ['log1p', 'zscore']
@@ -96,6 +96,7 @@ validation:
     time_step: 1
     label_path: downstream/flare/data/flare_daily_labels.csv
     expected_event_time_column: start_time
+    class_groups: ['0AB', 'C', 'M', 'X']
 ```
 
 单样本返回：
@@ -108,7 +109,9 @@ validation:
 }
 ```
 
-默认 PyTorch collate 后，`batch["label"]` 为 `LongTensor[B]`。标签按 `self.exist_idx[position]`（全局日期 ID）查询，不按过滤后的紧凑位置 `position` 查询。数据集初始化时还会核对 `flare_daily_labels.summary.json` 中的 CSV 哈希、dataset epoch 和 start/peak day 策略；继承的 `compute_modal_statistics()` 也已覆盖为只统计模态键。
+`class_groups` 是一个有序分区：列表位置就是新的 label ID，因此默认映射为 `0/A/B/C/M/X -> 0/0/0/1/2/3`。六个原始符号必须各出现且只能出现一次；空组、缺失、重复或非法字符都会在 Dataset 构造时直接报错。组内字符顺序会规范化，但组的列表顺序具有语义，例如 `['C','0AB','M','X']` 会把 C 定义为新类 0。
+
+默认 PyTorch collate 后，`batch["label"]` 为分组后的 `LongTensor[B]`。原始 CSV label 仍保存在 Dataset 的 `labels_by_date_id`，训练目标保存在 `grouped_labels_by_date_id`。标签按 `self.exist_idx[position]`（全局日期 ID）查询，不按过滤后的紧凑位置 `position` 查询。数据集初始化时还会核对 `flare_daily_labels.summary.json` 中的 CSV 哈希、dataset epoch 和 start/peak day 策略；继承的 `compute_modal_statistics()` 也已覆盖为只统计模态键。
 
 不要启用项目现有的 `custom_collate_fn`：它只遍历 `modal_list`，会静默丢弃 `label`。`load_imgs=True` 也被显式拒绝，因为父类该分支返回堆叠 Tensor 而不是模态字典。
 
@@ -120,7 +123,46 @@ validation:
 0: 3, A: 0, B: 2, C: 120, M: 219, X: 42
 ```
 
+使用默认分组后，Dataset 实际返回的四类分布为：
+
+```text
+0AB: 5, C: 120, M: 219, X: 42
+```
+
 请从仓库根目录启动训练，因为父类的模态索引路径是相对路径。也不要调用根项目的 `data.utils.transfer_date_to_id()` 来生成本任务 ID：该 helper 当前把日差额外乘了 1440；本转换器直接使用 `(date - 2010-05-01).days`，与 `self.exist_idx` 的日 ID 契约一致。
+
+## SolarPredictor 分类模型
+
+`SolarPredictor.py` 从 SolarCHIP checkpoint 中严格提取 HMI 分支，不在最终模型中注册非 HMI 模态或任何 decoder。checkpoint 可以是 Lightning 的 `{"state_dict": ...}` 或纯 Tensor state dict；HMI encoder、CNN `cls_proj` 和 contrastive projector 都要求键名及 shape 严格匹配，避免错误配置被随机初始化。
+
+两类 backbone 被映射到相同的 256 维主特征：CNN 对 `[B,C,H',W']` latent 使用独立 `AttentionPool2d`，ViT 对投影前的原始 CLS token 使用 `Linear(D,256)`。可选的预训练 contrastive 全局向量保持原来的 32 维，再通过新 adapter 映射到 256 维并由可学习 gate 残差加入：
+
+```text
+feature = main_256 + tanh(gate) * adapter(contrastive_32)
+logits  = MLP(LayerNorm(feature))
+```
+
+当前仓库有真实预训练权重的模型是 CNN。完整配置见 `solar_predictor_cnn.yaml`，其中使用 checkpoint 保存时的精确 `attn_resolutions: []`；不要换成当前通用配置中的 `[32,64]`，否则 encoder 无法严格匹配。训练命令：
+
+```bash
+python -m solarchip.main.train \
+  -b downstream/flare/solar_predictor_cnn.yaml \
+  -n flare_cnn_256
+```
+
+首次启动必须能读取 `pretrained_ckpt_path`，用于严格提取 HMI 预训练权重。之后保存的完整 Lightning checkpoint 已包含 HMI encoder、映射层、分类头、optimizer 和 scheduler 状态；即使原始 SolarCHIP checkpoint 被移动，也可以独立恢复。用本项目 `train.py` 恢复时必须同时显式传入本配置：
+
+```bash
+python -m solarchip.main.train \
+  -r <run_dir>/checkpoints/last.ckpt \
+  -b downstream/flare/solar_predictor_cnn.yaml
+```
+
+不能省略 `-b`：当前 `train.py` 会在 resume 时把 argparse 的默认 VQGAN 配置追加到已保存配置之后，进而覆盖分类模型配置。也不要把 Ctrl-C 时 `SetupCallback` 写出的 `last_state_dict.ckpt` 当作完整 resume checkpoint；它只有裸 `state_dict`，应使用 `ModelCheckpoint` 生成的 `last.ckpt`。模型参数里的 `max_epochs` 控制 cosine scheduler，trainer 的 `max_epochs` 控制训练终点，两处应保持一致。
+
+配置只读取 `modal_list: ['hmi']`。SolarPredictor 接收与 Dataset 相同的 `class_groups`，并用组数自动确定分类头、confusion matrix、class-weight 长度及指标类别数；默认输出 4 类。训练启动前会逐个核对 train/validation/test Dataset 的规范化分组，连组顺序都必须完全一致，否则在首个 batch 前报错。checkpoint 同时保存并校验分组语义，因此即便两种方案恰好都是四分类，也不会静默错用 logits。旧的六分类 downstream checkpoint 不能完整 resume 到默认四分类，应从 SolarCHIP 预训练 checkpoint 开始新训练。checkpoint 仍以 `val_loss` 选择，且 `save_weights_only: false`、`save_last: true`。
+
+前 5 epoch 冻结预训练分支时，参数仍从开始就保留在 optimizer 中，forward 用 `no_grad` 跳过其梯度；这避免在后续解冻时改变 optimizer 参数组。若改为多 GPU，必须显式使用 `strategy: ddp_find_unused_parameters_true`。
 
 ## 验证
 
@@ -129,9 +171,14 @@ python3 -m unittest \
   downstream.flare.tests.test_download_goes_flare_report \
   downstream.flare.tests.test_prepare_flare_labels
 python3 -m py_compile \
-  downstream/flare/download_goes_flare_report.py \
-  downstream/flare/prepare_flare_labels.py \
-  downstream/flare/dataset.py
+  downstream/flare/data/download_goes_flare_report.py \
+  downstream/flare/data/prepare_flare_labels.py \
+  downstream/flare/data/dataset.py
+
+# 模型测试需要先激活项目的 solargpt/PyTorch 环境。
+python -m unittest \
+  downstream.flare.tests.test_flare_dataset \
+  downstream.flare.tests.test_solar_predictor
 ```
 
 已完成真实 NOAA 数据转换、CSV/日期 ID/manifest 全量哈希验证、下载器与转换器单元测试和静态编译。在本机 `solargpt` Conda 环境中还实际实例化了父类和 `FlareDataset`，读取真实 `exist_idx` 与 label sidecar，并用 PyTorch 2.6 验证默认 collate 得到 `LongTensor[B]`、统计函数不再把 label 当模态。由于仓库的 `global_settings.DATA_ROOT` 仍指向训练服务器上的 Linux `/mnt/...` 路径，本机测试用合成 Tensor 代替父类图像读取；真实 PT 图像 I/O 仍需在训练服务器的既有数据环境中跑一个 batch 验收。

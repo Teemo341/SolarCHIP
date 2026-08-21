@@ -25,7 +25,7 @@ from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_DATA_DIR = SCRIPT_DIR / "data"
+DEFAULT_DATA_DIR = SCRIPT_DIR
 DEFAULT_MANIFEST = DEFAULT_DATA_DIR / "noaa_goes_xrs" / "download_manifest.json"
 DEFAULT_OUTPUT = DEFAULT_DATA_DIR / "flare_daily_labels.csv"
 DEFAULT_SUMMARY = DEFAULT_DATA_DIR / "flare_daily_labels.summary.json"

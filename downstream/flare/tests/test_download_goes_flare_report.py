@@ -10,8 +10,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from downstream.flare import download_goes_flare_report as downloader
-from downstream.flare.prepare_flare_labels import load_manifest_inputs
+from downstream.flare.data import download_goes_flare_report as downloader
+from downstream.flare.data.prepare_flare_labels import load_manifest_inputs
 
 
 MISSION_FILENAME = "sci_xrsf-l2-flrpt_geo_s20240101_e20251231_v1-0-1.csv"
@@ -141,7 +141,9 @@ class DownloadCatalogTests(unittest.TestCase):
             self.assertEqual(direct_path.name, yearly_path.name)
             self.assertEqual(direct_path.read_bytes(), self.mission_payload)
             self.assertEqual(
-                downloader.validate_csv_payload(yearly_path.read_bytes(), yearly_path.name).rows,
+                downloader.validate_csv_payload(
+                    yearly_path.read_bytes(), yearly_path.name
+                ).rows,
                 2,
             )
             self.assertFalse(direct_manifest["year_selection_applied"])
@@ -165,7 +167,10 @@ class DownloadCatalogTests(unittest.TestCase):
             self.assertFalse((output_dir / "raw_yearly").exists())
             self.assertFalse(legacy_catalog.exists())
             self.assertFalse(
-                any(path.name.startswith(".goes_xrs_yearly_") for path in output_dir.iterdir())
+                any(
+                    path.name.startswith(".goes_xrs_yearly_")
+                    for path in output_dir.iterdir()
+                )
             )
             self.assertEqual(
                 {path.name for path in output_dir.iterdir()},
@@ -292,7 +297,10 @@ class DownloadCatalogTests(unittest.TestCase):
             for filename, previous_payload in previous_bundle.items():
                 self.assertEqual((output_dir / filename).read_bytes(), previous_payload)
             self.assertFalse(
-                any(path.name.startswith(".goes_xrs_yearly_") for path in output_dir.iterdir())
+                any(
+                    path.name.startswith(".goes_xrs_yearly_")
+                    for path in output_dir.iterdir()
+                )
             )
             load_manifest_inputs(output_dir / downloader.MANIFEST_FILENAME)
 
@@ -309,7 +317,9 @@ class DownloadCatalogTests(unittest.TestCase):
                 seen_transports.append(transport)
                 return self.fetch(url, transport, timeout)
 
-            def fail_manifest_install(source: str | Path, destination: str | Path) -> None:
+            def fail_manifest_install(
+                source: str | Path, destination: str | Path
+            ) -> None:
                 nonlocal manifest_install_failed
                 destination_path = Path(destination)
                 if (

@@ -8,7 +8,7 @@ data:
     num_workers: 8
     wrap: false
     train:
-      target: downstream.flare.dataset.FlareDataset
+      target: downstream.flare.data.dataset.FlareDataset
       params:
         modal_list: ['hmi', '0094']
         enhance_type: ['log1p', 'zscore']
@@ -18,8 +18,9 @@ data:
         time_step: 1
         label_path: downstream/flare/data/flare_daily_labels.csv
         expected_event_time_column: start_time
+        class_groups: ['0AB', 'C', 'M', 'X']
     validation:
-      target: downstream.flare.dataset.FlareDataset
+      target: downstream.flare.data.dataset.FlareDataset
       params:
         modal_list: ['hmi', '0094']
         enhance_type: ['log1p', 'zscore']
@@ -29,3 +30,4 @@ data:
         time_step: 1
         label_path: downstream/flare/data/flare_daily_labels.csv
         expected_event_time_column: start_time
+        class_groups: ['0AB', 'C', 'M', 'X']

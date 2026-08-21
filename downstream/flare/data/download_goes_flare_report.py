@@ -45,9 +45,7 @@ YEAR_PATTERN = re.compile(
 METADATA_FILENAME = "sci_xrsf-l2-flrpt_geo_metadata.json"
 CATALOG_FILENAME = "goes_xrs_flare_report.csv"
 MANIFEST_FILENAME = "download_manifest.json"
-LEGACY_MERGED_PATTERN = re.compile(
-    r"goes_xrs_flare_report_\d{4}_\d{4}_merged\.csv"
-)
+LEGACY_MERGED_PATTERN = re.compile(r"goes_xrs_flare_report_\d{4}_\d{4}_merged\.csv")
 JINA_MARKER = b"Markdown Content:\n"
 EXPECTED_COLUMNS = [
     "time",
@@ -74,7 +72,7 @@ EXPECTED_COLUMNS = [
     "active_region",
 ]
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "data" / "noaa_goes_xrs"
+DEFAULT_OUTPUT_DIR = SCRIPT_DIR / "noaa_goes_xrs"
 
 
 class DownloadError(RuntimeError):
@@ -381,7 +379,9 @@ def commit_download_bundle(
         if path in legacy_list and path.is_dir() and not path.is_symlink():
             continue
         if path.is_symlink() or not path.is_file():
-            raise BundleCommitError(f"Refusing to replace unexpected output path: {path}")
+            raise BundleCommitError(
+                f"Refusing to replace unexpected output path: {path}"
+            )
 
     rollback_dir = staging_dir / ".rollback"
     rollback_dir.mkdir()

@@ -7,8 +7,8 @@ import unittest
 from datetime import date
 from pathlib import Path
 
-from downstream.flare.download_goes_flare_report import EXPECTED_COLUMNS
-from downstream.flare.prepare_flare_labels import (
+from downstream.flare.data.download_goes_flare_report import EXPECTED_COLUMNS
+from downstream.flare.data.prepare_flare_labels import (
     LabelConversionError,
     build_daily_labels,
     load_manifest_inputs,

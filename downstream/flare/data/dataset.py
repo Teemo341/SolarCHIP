@@ -14,9 +14,15 @@ import torch
 
 from data.dataset.SolarDataset import multimodal_dataset
 
+from .class_groups import (
+    DEFAULT_CLASS_GROUPS,
+    build_raw_label_to_group,
+    normalize_class_groups,
+)
+
 
 DATASET_EPOCH = date(2010, 5, 1)
-DEFAULT_LABEL_PATH = Path("downstream/flare/data/flare_daily_labels.csv")
+DEFAULT_LABEL_PATH = Path(__file__).resolve().parent / "flare_daily_labels.csv"
 DEFAULT_MODAL_LIST = (
     "hmi",
     "0094",
@@ -145,6 +151,7 @@ class FlareDataset(multimodal_dataset):
         verify_label_summary: bool = True,
         expected_event_time_column: str = "start_time",
         return_date_id: bool = False,
+        class_groups: Sequence[str] | None = DEFAULT_CLASS_GROUPS,
     ) -> None:
         if load_imgs:
             raise ValueError(
@@ -171,8 +178,19 @@ class FlareDataset(multimodal_dataset):
             enhance_type=resolved_enhance,
         )
 
+        self.class_groups = normalize_class_groups(class_groups)
+        self.num_classes = len(self.class_groups)
+        self.raw_label_to_group = build_raw_label_to_group(self.class_groups)
+
         self.label_path = str(Path(label_path).expanduser())
+        # Keep the auditable CSV labels in their original 0..5 meaning. Only
+        # __getitem__ exposes the grouped training target.
         self.labels_by_date_id = load_daily_label_table(self.label_path)
+        self.raw_labels_by_date_id = self.labels_by_date_id
+        self.grouped_labels_by_date_id = {
+            date_id: self.raw_label_to_group[raw_label]
+            for date_id, raw_label in self.labels_by_date_id.items()
+        }
         resolved_summary_path = (
             Path(self.label_path).with_suffix(".summary.json")
             if label_summary_path is None
@@ -203,9 +221,20 @@ class FlareDataset(multimodal_dataset):
                 f"{len(missing_date_ids)} selected SolarCHIP date IDs; first: {preview}"
             )
 
-        counts = Counter(self.labels_by_date_id[value] for value in selected_date_ids)
-        self.class_counts = {label: counts.get(label, 0) for label in range(6)}
-        print(f"Flare labels for selected samples: {self.class_counts}")
+        raw_counts = Counter(
+            self.labels_by_date_id[value] for value in selected_date_ids
+        )
+        self.raw_class_counts = {label: raw_counts.get(label, 0) for label in range(6)}
+        counts = Counter(
+            self.grouped_labels_by_date_id[value] for value in selected_date_ids
+        )
+        self.class_counts = {
+            label: counts.get(label, 0) for label in range(self.num_classes)
+        }
+        print(
+            f"Flare class groups {list(self.class_groups)}; "
+            f"selected-sample counts: {self.class_counts}"
+        )
 
     def __getitem__(self, position: int) -> dict[str, torch.Tensor]:
         sample = super().__getitem__(position)
@@ -218,7 +247,7 @@ class FlareDataset(multimodal_dataset):
             return sample
         date_id = int(self.exist_idx[position])
         sample["label"] = torch.tensor(
-            self.labels_by_date_id[date_id], dtype=torch.long
+            self.grouped_labels_by_date_id[date_id], dtype=torch.long
         )
         if self.return_date_id:
             sample["date_id"] = torch.tensor(date_id, dtype=torch.long)
