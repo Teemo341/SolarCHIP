@@ -79,6 +79,22 @@ DISPLAY_LIMITS = {
     '4500': (0.0, 16000.0),
 }
 
+# 与训练管线一致的 signed-log1p 压缩后（enhance='log1p'）的固定显示范围，
+# 由原始数据在 log1p 空间的 p99.9 附近标定。HMI 仍以 0 对称，AIA 为 0 到上限。
+DISPLAY_LIMITS_LOG1P = {
+    'hmi':  (-4.0, 4.0),
+    '0094': (0.0, 4.0),
+    '0131': (0.0, 5.0),
+    '0171': (0.0, 8.0),
+    '0193': (0.0, 8.0),
+    '0211': (0.0, 7.5),
+    '0304': (0.0, 6.0),
+    '0335': (0.0, 4.5),
+    '1600': (0.0, 6.0),
+    '1700': (0.0, 7.5),
+    '4500': (0.0, 9.5),
+}
+
 
 def get_header(modal: str,
                time: str):
@@ -113,6 +129,14 @@ def get_header(modal: str,
     header['CRPIX2'] = 512.5
     header['CROTA2'] = 0.0
 
+    # 观测者位置与太阳半径（SDO 标准近似值）：
+    # 消除 sunpy "missing metadata" warning，并支持后续坐标变换/画日面边缘等操作。
+    # 纯出图用近似值即可；如需精确坐标变换，应从真实 FITS 头读取精确值。
+    header['HGLN_OBS'] = 0.0          # 观测者日面经度（deg），SDO 近似 0
+    header['HGLT_OBS'] = 0.0          # 观测者日面纬度（deg），≈B0 角，SDO 近似 0
+    header['DSUN_OBS'] = 1.496e11     # 日心到观测者距离（米），≈1 AU
+    header['RSUN_REF'] = 6.957e8      # 参考太阳半径（米），标准光球半径
+
     return header
 
 def format_timestamp(time_int: int) -> str:
@@ -131,10 +155,20 @@ def solarplot(data,
               save_path: str,
               figsize=(10, 8),
               vmin=None,
-              vmax=None):
+              vmax=None,
+              enhance=None):
     if torch.is_tensor(data):
         data = data.detach().cpu().numpy()
     data = np.asarray(data)
+
+    # 可选显示增强，与训练管线一致：
+    #   None      -> 原始物理量（默认）
+    #   'log1p'   -> signed-log1p 动态范围压缩 sign(x)*log1p(|x|)，
+    #                弱磁场/弱发射结构更可见（HMI 尤其明显）
+    if enhance == 'log1p':
+        data = np.sign(data) * np.log1p(np.abs(data))
+    elif enhance is not None:
+        raise ValueError(f"enhance 只支持 None 或 'log1p'，收到: {enhance!r}")
 
     header = get_header(modal, time)
     mymap = sunpy.map.Map((data, header))
@@ -144,7 +178,8 @@ def solarplot(data,
     # 未显式给出时，使用该模态的固定显示范围（跨图可比）；
     # 也可以手动传 vmin/vmax 覆盖默认值。
     if vmin is None or vmax is None:
-        limits = DISPLAY_LIMITS.get(modal)
+        limits = (DISPLAY_LIMITS_LOG1P if enhance == 'log1p'
+                  else DISPLAY_LIMITS).get(modal)
         if limits is not None:
             vmin = limits[0] if vmin is None else vmin
             vmax = limits[1] if vmax is None else vmax

@@ -22,7 +22,13 @@ sample.py —— 对训练好的模型在测试集(validation split)上采样，
    模型名字从训练日志路径读取；pt 单独放一层，便于后续转成其它数据格式。
 8. 虚拟 original 模型（-r original）：不采样，直接把 data/ 里保存好的真实数据
    pt 复制到 logs/sample/pt/{目标模态}/original/，只复制 time_interval / time_step
-   筛选后的文件，文件保持原名（内容本身是物理量，与反归一化后的采样结果可比）。
+   筛选后的文件，文件保持原名（内容本身是物理量，与反归一化后的采样结果可比）。9. HMI 目标模态时，采样结果会乘上由真实 HMI 数据统计生成的日面 mask
+   （solarchip/visualization/hmi_solar_mask.pt），确保只有太阳本体有数值、
+   盘外没有模型产生的干扰项。仅 HMI 需要，其它模态盘外本身就有值。9. --visualization true 时采样后调用 solarchip/visualization/solarplot.py 出图，
+   保存到 logs/sample/png/{目标模态}/{模型名字}/，命名与 pt 一致
+   （sample_<时间>.png / sample_cfg_<时间>.png），只补充缺失的图；
+   -r original 时同样支持，png 保存到 logs/sample/png/{目标模态}/original/，
+   命名与复制的 pt 一致（原名换 .png 后缀）。
 
 用法示例:
     # ControlNet: 0094 -> hmi
@@ -47,6 +53,7 @@ sample.py —— 对训练好的模型在测试集(validation split)上采样，
         --ckpt epoch=000198_val_loss_simple=0.0385.ckpt --max_batches 1
 
     # 虚拟 original 模型: 直接把真实数据 pt 复制到 logs/sample/pt/{目标模态}/original/
+    # (加 --visualization true 可顺带为真实数据出图)
     python -m solarchip.main.sample -r original --target_modal hmi \
         --time_interval 5000 6000 --time_step 1
 """
@@ -90,7 +97,7 @@ if not os.path.isdir(os.path.join(os.getcwd(), 'data')):
 from solarchip.utils.util import get_obj_from_str
 from solarchip.utils import musa_support  # noqa: F401  引入 MUSA 设备兼容补丁
 from data.dataset.SolarDataset import modal_status
-from data.utils import get_modal_dir, load_list  # data/ 里记录的数据 id -> 文件路径/采集时间转换
+from data.utils import get_modal_dir, load_list, transfer_id_to_date  # data/ 里记录的数据 id -> 文件路径/采集时间转换
 
 # 训练日志目录名形如 2026-08-07T17-58-09，模型名字是它的父目录名
 TIMESTAMP_RE = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$')
@@ -109,6 +116,16 @@ ORIGINAL_MODEL_NAME = 'original'
 
 
 def get_parser():
+    def str2bool(v):
+        if isinstance(v, bool):
+            return v
+        if v.lower() in ("yes", "true", "t", "y", "1"):
+            return True
+        elif v.lower() in ("no", "false", "f", "n", "0"):
+            return False
+        else:
+            raise argparse.ArgumentTypeError("Boolean value expected.")
+
     parser = argparse.ArgumentParser(
         description='对训练好的模型在测试集上采样，保存反归一化后的原始 .pt 张量。')
     parser.add_argument(
@@ -200,6 +217,16 @@ def get_parser():
         '--quiet',
         action='store_true',
         help='关闭 DDPM 内部逐 batch 的进度条（外层 batch 进度条仍然保留）。',
+    )
+    parser.add_argument(
+        '--visualization',
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=False,
+        help='采样后调用 solarplot.py 生成可视化图片，保存到 '
+             'logs/sample/png/{目标模态}/{模型名字}/，命名与 pt 一致'
+             '（sample_<时间>.png / sample_cfg_<时间>.png），只补充缺失的图。',
     )
     return parser
 
@@ -529,6 +556,36 @@ class RawTensorLogger:
 
 
 # ----------------------------------------------------------------------
+# HMI 日面 mask：生成模型（尤其 ControlNet）没有约束太阳外围应为 0，
+# 会在盘外产生干扰项。这里用真实 HMI 数据统计生成的 mask 把盘外置零，
+# 保证保存的 pt 与后续画图都只有太阳本体有数值。
+# 仅 HMI 需要，其它模态盘外本身也有物理量。
+# ----------------------------------------------------------------------
+HMI_SOLAR_MASK_PATH = os.path.join(REPO_ROOT, 'solarchip', 'visualization',
+                                   'hmi_solar_mask.pt')
+_hmi_solar_mask = None
+
+
+def get_hmi_solar_mask():
+    """加载 HMI 日面 mask (H, W) 0/1 张量（惰性加载 + 缓存）。"""
+    global _hmi_solar_mask
+    if _hmi_solar_mask is None:
+        if not os.path.isfile(HMI_SOLAR_MASK_PATH):
+            raise FileNotFoundError(
+                f'找不到 HMI 日面 mask: {HMI_SOLAR_MASK_PATH}\n'
+                f'请先运行: python solarchip/visualization/generate_hmi_mask.py')
+        _hmi_solar_mask = torch.load(HMI_SOLAR_MASK_PATH, weights_only=True)
+        print(f'[sample] 已加载 HMI 日面 mask: {HMI_SOLAR_MASK_PATH}')
+    return _hmi_solar_mask
+
+
+def apply_hmi_solar_mask(tensors: dict):
+    """对 HMI 结果张量 (B, 1, H, W) 逐图乘上日面 mask (H, W)，盘外置零。"""
+    mask = get_hmi_solar_mask()
+    return {k: v * mask for k, v in tensors.items() if v is not None}
+
+
+# ----------------------------------------------------------------------
 # 虚拟 original 模型：直接复制真实数据
 # ----------------------------------------------------------------------
 def run_original_copy(opt):
@@ -555,6 +612,15 @@ def run_original_copy(opt):
     save_dir = os.path.join(opt.save_root, modal, ORIGINAL_MODEL_NAME)
     os.makedirs(save_dir, exist_ok=True)
 
+    # --visualization 时给真实数据出图，保存到 logs/sample/png/{模态}/original/，
+    # 命名与复制过去的 pt 一致（原名换 .png 后缀），只补充缺失的图
+    if opt.visualization:
+        # 按需导入，避免不需要可视化时加载 sunpy
+        from solarchip.visualization.solarplot import solarplot, format_timestamp
+        png_dir = get_png_dir(opt.save_root, modal, ORIGINAL_MODEL_NAME)
+        os.makedirs(png_dir, exist_ok=True)
+        vis_made = vis_skipped = 0
+
     copied, skipped = 0, 0
     for day_id in tqdm(day_ids, desc='Copying original data'):
         src = get_modal_dir(modal, day_id)[1]
@@ -565,8 +631,60 @@ def run_original_copy(opt):
         shutil.copy2(src, os.path.join(save_dir, os.path.basename(src)))
         copied += 1
 
+        if opt.visualization:
+            png_path = os.path.join(
+                png_dir, os.path.basename(src).replace('.pt', '.png'))
+            if os.path.isfile(png_path):
+                vis_skipped += 1
+                continue
+            data = torch.load(src, weights_only=True).numpy()
+            dt = transfer_id_to_date(day_id)
+            time_int = int(dt.strftime('%Y%m%d%H%M'))
+            solarplot(data, modal, format_timestamp(time_int), png_path)
+            vis_made += 1
+
+    if opt.visualization:
+        print(f'[sample] original 可视化完成: 生成 {vis_made} 张, '
+              f'已存在跳过 {vis_skipped} 张, 保存在 {png_dir}')
+
     print(f'[sample] original 完成: 复制 {copied} 个文件, '
           f'跳过 {skipped} 个缺失文件, 保存在 {save_dir}')
+
+
+# ----------------------------------------------------------------------
+# 可视化：调用 solarplot 出图（可选，只补充缺失的图）
+# ----------------------------------------------------------------------
+def get_png_dir(save_root, target_modal, model_name):
+    """由 pt 保存根目录推出 png 目录：logs/sample/pt -> logs/sample/png。"""
+    root = os.path.abspath(save_root).rstrip('/')
+    if os.path.basename(root) == 'pt':
+        root = os.path.dirname(root)
+    return os.path.join(root, 'png', target_modal, model_name)
+
+
+def visualize_tensors(results, times, day_ids, target_modal, png_dir):
+    """把采样结果张量逐图保存成 png，命名与 pt 一致（sample_<时间>.png），
+    只补充缺失的图。返回 (生成数, 跳过数)。"""
+    # 按需导入，避免不需要可视化时加载 sunpy
+    from solarchip.visualization.solarplot import solarplot, format_timestamp
+    os.makedirs(png_dir, exist_ok=True)
+    made = skipped = 0
+    for name, tensor in results.items():
+        if tensor is None:
+            continue
+        for j, t in enumerate(times):
+            png_path = os.path.join(png_dir, f'{name}_{t}.png')
+            if os.path.isfile(png_path):
+                skipped += 1
+                continue
+            img = tensor[j]
+            if img.dim() >= 3 and img.shape[0] == 1:
+                img = img[0]
+            dt = transfer_id_to_date(day_ids[j])
+            time_int = int(dt.strftime('%Y%m%d%H%M'))
+            solarplot(img.numpy(), target_modal, format_timestamp(time_int), png_path)
+            made += 1
+    return made, skipped
 
 
 # ----------------------------------------------------------------------
@@ -642,7 +760,9 @@ def main():
     if cls_name == 'SolarControl' and not opt.no_cfg:
         cfg_scale = opt.cfg_scale
 
-    # 7. 逐 batch 采样并保存（每张图单独一个 .pt）
+    # 7. 逐 batch 采样并保存（每张图单独一个 .pt），可选可视化
+    png_dir = get_png_dir(opt.save_root, target_modal, model_name)
+    vis_made = vis_skipped = 0
     total_batches = 0
     for batch_idx, batch in enumerate(tqdm(val_loader, desc='Sampling batches')):
         if cls_name in DIFFUSION_MODEL_NAMES:
@@ -652,6 +772,10 @@ def main():
         else:
             results = sample_compare_batch(model, batch, denormalize)
 
+        # HMI 目标模态：乘上日面 mask，把盘外模型产生的干扰项置零
+        if target_modal == 'hmi':
+            results = apply_hmi_solar_mask(results)
+
         # 该 batch 内每张图的 day id -> 条件模态采集时间串
         first_tensor = next(iter(batch.values()))
         b = first_tensor.shape[0]
@@ -660,10 +784,21 @@ def main():
         times = [get_sample_time_string(time_modal, d) for d in day_ids]
 
         logger.log_batch(results, times)
+
+        if opt.visualization:
+            made, skipped = visualize_tensors(
+                results, times, day_ids, target_modal, png_dir)
+            vis_made += made
+            vis_skipped += skipped
+
         total_batches += 1
         if opt.max_batches is not None and total_batches >= opt.max_batches:
             print(f'[sample] 达到 --max_batches={opt.max_batches}，提前结束。')
             break
+
+    if opt.visualization:
+        print(f'[sample] 可视化完成: 生成 {vis_made} 张, 已存在跳过 {vis_skipped} 张, '
+              f'保存在 {png_dir}')
 
     print(f'[sample] 完成: {len(val_dataset)} 个样本配置, '
           f'采样 {total_batches} 个 batch, 结果保存在 {save_dir}')

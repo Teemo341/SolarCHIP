@@ -7,11 +7,15 @@ test.py —— 根据采样结果与真实数据（original）计算指标，并
    time_step 指定时间点的采样结果；缺失时自动以子进程调用 sample.py 补采样，
    采样参数与本脚本保持一致。
 3. 计算指标：真实值取 logs/sample/pt/{目标模态}/original/ 里同一时间点的目标
-   模态数据。例如 0094->hmi 的 controlnet，拿生成的 hmi 对比 original 里对应
-   时间的 hmi。结果保存为 logs/sample/metrics/{目标模态}/{模型名字}/metrics.json。
-4. --visualization true 时调用 solarchip/visualization/solarplot.py 出图，保存到
-   logs/sample/png/{目标模态}/{模型名字}/，命名与 sample.py 一致（sample_<时间>.png /
-   sample_cfg_<时间>.png），只补充缺失的图。
+   模态数据；若 original 目录缺少对应文件，同样自动调用
+   sample.py -r original 补复制。例如 0094->hmi 的 controlnet，拿生成的 hmi
+   对比 original 里对应时间的 hmi。结果保存为
+   logs/sample/metrics/{目标模态}/{模型名字}/metrics.json；
+   如果存在 CFG 采样（sample_cfg_*.pt），会同时计算 CFG 的指标并另存为
+   metrics_cfg.json。
+4. --visualization true 时委托 sample.py（--visualization）出图，保存到
+   logs/sample/png/{目标模态}/{模型名字}/，命名与 sample.py 一致
+   （sample_<时间>.png / sample_cfg_<时间>.png），只补充缺失的图。
 
 用法示例:
     python -m solarchip.main.test \
@@ -51,8 +55,9 @@ from solarchip.main.sample import (
     get_model_name,
     build_validation_loader,
     get_sample_time_string,
+    get_png_dir,
 )
-from data.utils import get_modal_dir, transfer_id_to_date
+from data.utils import get_modal_dir
 
 
 # ----------------------------------------------------------------------
@@ -228,7 +233,8 @@ def get_parser():
         nargs='?',
         const=True,
         default=False,
-        help='是否调用 solarplot.py 生成可视化图片，存到 {save_root}/png/...。',
+        help='是否生成可视化图片（委托 sample.py --visualization），'
+             '存到 {save_root}/png/...。',
     )
     return parser
 
@@ -324,7 +330,6 @@ def main():
     pt_dir = os.path.join(root, 'pt', target_modal, model_name)
     original_dir = os.path.join(root, 'pt', target_modal, ORIGINAL_MODEL_NAME)
     metrics_dir = os.path.join(root, 'metrics', target_modal, model_name)
-    png_dir = os.path.join(root, 'png', target_modal, model_name)
 
     # 2. 与 sample.py 完全一致的 day id 列表
     data_params = config.data.params
@@ -344,6 +349,8 @@ def main():
     if missing:
         print(f'[test] 缺少 {len(missing)} 个采样文件，调用 sample.py 补采样 ...')
         cmd = build_sample_cmd(opt, has_cfg)
+        if opt.visualization:
+            cmd += ['--visualization']  # 补采样时顺带出图
         print('[test] 运行: ' + ' '.join(cmd))
         subprocess.run(cmd, cwd=REPO_ROOT, check=True)
         _, missing = expected_sample_files(pt_dir, day_ids, time_modal, has_cfg)
@@ -353,80 +360,111 @@ def main():
     else:
         print('[test] 采样结果完整，无需补采样。')
 
-    # 4. 校验指标名并计算
+    # 3b. 检查 original 真实数据，缺失时调用 sample.py -r original 补复制
+    expected_gt = [
+        os.path.join(original_dir,
+                     os.path.basename(get_modal_dir(target_modal, d)[1]))
+        for d in day_ids
+    ]
+    missing_gt = [p for p in expected_gt if not os.path.isfile(p)]
+    if missing_gt:
+        print(f'[test] 缺少 {len(missing_gt)} 个真实数据文件，'
+              f'调用 sample.py -r original 补复制 ...')
+        cmd = [
+            sys.executable, '-m', 'solarchip.main.sample',
+            '-r', ORIGINAL_MODEL_NAME,
+            '--target_modal', target_modal,
+            '--time_interval', str(opt.time_interval[0]), str(opt.time_interval[1]),
+            '--time_step', str(opt.time_step),
+            '--save_root', os.path.join(opt.save_root, 'pt'),
+        ]
+        print('[test] 运行: ' + ' '.join(cmd))
+        subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+        missing_gt = [p for p in expected_gt if not os.path.isfile(p)]
+        if missing_gt:
+            print(f'[test] 警告: 补复制后仍缺少 {len(missing_gt)} 个真实数据文件，'
+                  f'这些时间点将跳过（例如: {missing_gt[:3]}）。')
+    else:
+        print('[test] 真实数据完整，无需补复制。')
+
+    # 4. 校验指标名并计算：有 CFG 采样时同时计算 sample 与 sample_cfg 两份指标
     for name in opt.metrics:
         if name not in METRIC_REGISTRY:
             raise ValueError(f'未知指标 {name}，可用指标: {sorted(METRIC_REGISTRY)}')
 
-    per_sample = {name: {} for name in opt.metrics}
-    skipped_gt = 0
-    for day_id in tqdm(day_ids, desc='Computing metrics'):
-        t = get_sample_time_string(time_modal, day_id)
-        pred_path = os.path.join(pt_dir, f'sample_{t}.pt')
-        gt_path = os.path.join(original_dir,
-                               os.path.basename(get_modal_dir(target_modal, day_id)[1]))
-        if not os.path.isfile(gt_path):
-            skipped_gt += 1
-            print(f'[test] 缺少真实数据，跳过 {t}: {gt_path}')
-            continue
-        pred = torch.load(pred_path, weights_only=True)
-        gt = torch.load(gt_path, weights_only=True)
-        for name in opt.metrics:
-            per_sample[name][t] = METRIC_REGISTRY[name](pred, gt)
-
-    summary = {}
-    for name in opt.metrics:
-        values = list(per_sample[name].values())
-        summary[name] = {
-            'mean': finite_or_none(float(np.mean(values))) if values else None,
-            'std': finite_or_none(float(np.std(values))) if values else None,
-            'n': len(values),
-        }
-        print(f'[test] {name}: mean={summary[name]["mean"]}, '
-              f'std={summary[name]["std"]}, n={summary[name]["n"]}')
-
-    report = {
-        'model_name': model_name,
-        'target_modal': target_modal,
-        'time_modal': time_modal,
-        'time_interval': list(opt.time_interval),
-        'time_step': opt.time_step,
-        'n_samples': len(day_ids),
-        'n_compared': len(per_sample[opt.metrics[0]]) if opt.metrics else 0,
-        'n_skipped_missing_gt': skipped_gt,
-        'metrics': summary,
-        'per_sample': per_sample,
-    }
+    kinds = ['sample', 'sample_cfg'] if has_cfg else ['sample']
     os.makedirs(metrics_dir, exist_ok=True)
-    metrics_path = os.path.join(metrics_dir, 'metrics.json')
-    with open(metrics_path, 'w') as f:
-        json.dump(report, f, indent=2, ensure_ascii=False)
-    print(f'[test] 指标已保存: {metrics_path}')
-
-    # 5. 可视化：只补充缺失的图
-    if opt.visualization:
-        # 按需导入，避免不需要可视化时加载 sunpy
-        from solarchip.visualization.solarplot import solarplot, format_timestamp
-        os.makedirs(png_dir, exist_ok=True)
-        made = skipped = 0
-        names = ['sample', 'sample_cfg'] if has_cfg else ['sample']
-        for day_id in tqdm(day_ids, desc='Visualizing'):
+    for kind in kinds:
+        per_sample = {name: {} for name in opt.metrics}
+        skipped_gt = skipped_pred = 0
+        for day_id in tqdm(day_ids, desc=f'Computing metrics ({kind})'):
             t = get_sample_time_string(time_modal, day_id)
-            for name in names:
-                png_path = os.path.join(png_dir, f'{name}_{t}.png')
-                if os.path.isfile(png_path):
-                    skipped += 1
-                    continue
-                pt_path = os.path.join(pt_dir, f'{name}_{t}.pt')
-                if not os.path.isfile(pt_path):
-                    continue
-                data = torch.load(pt_path, weights_only=True).numpy()
-                dt = transfer_id_to_date(day_id)
-                time_int = int(dt.strftime('%Y%m%d%H%M'))
-                solarplot(data, target_modal, format_timestamp(time_int), png_path)
-                made += 1
-        print(f'[test] 可视化完成: 生成 {made} 张, 已存在跳过 {skipped} 张, '
-              f'保存在 {png_dir}')
+            pred_path = os.path.join(pt_dir, f'{kind}_{t}.pt')
+            gt_path = os.path.join(original_dir,
+                                   os.path.basename(get_modal_dir(target_modal, day_id)[1]))
+            if not os.path.isfile(pred_path):
+                skipped_pred += 1
+                print(f'[test] 缺少采样文件，跳过 {t}: {pred_path}')
+                continue
+            if not os.path.isfile(gt_path):
+                skipped_gt += 1
+                print(f'[test] 缺少真实数据，跳过 {t}: {gt_path}')
+                continue
+            pred = torch.load(pred_path, weights_only=True)
+            gt = torch.load(gt_path, weights_only=True)
+            for name in opt.metrics:
+                per_sample[name][t] = METRIC_REGISTRY[name](pred, gt)
+
+        summary = {}
+        for name in opt.metrics:
+            values = list(per_sample[name].values())
+            summary[name] = {
+                'mean': finite_or_none(float(np.mean(values))) if values else None,
+                'std': finite_or_none(float(np.std(values))) if values else None,
+                'n': len(values),
+            }
+            print(f'[test] {kind} {name}: mean={summary[name]["mean"]}, '
+                  f'std={summary[name]["std"]}, n={summary[name]["n"]}')
+
+        report = {
+            'model_name': model_name,
+            'target_modal': target_modal,
+            'time_modal': time_modal,
+            'sample_kind': kind,
+            'time_interval': list(opt.time_interval),
+            'time_step': opt.time_step,
+            'n_samples': len(day_ids),
+            'n_compared': len(per_sample[opt.metrics[0]]) if opt.metrics else 0,
+            'n_skipped_missing_gt': skipped_gt,
+            'n_skipped_missing_pred': skipped_pred,
+            'metrics': summary,
+            'per_sample': per_sample,
+        }
+        json_name = 'metrics.json' if kind == 'sample' else 'metrics_cfg.json'
+        metrics_path = os.path.join(metrics_dir, json_name)
+        with open(metrics_path, 'w') as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
+        print(f'[test] 指标已保存: {metrics_path}')
+
+    # 5. 可视化：委托 sample.py（--visualization），只补充缺失的图
+    if opt.visualization:
+        png_dir = get_png_dir(os.path.join(opt.save_root, 'pt'),
+                              target_modal, model_name)
+        names = ['sample', 'sample_cfg'] if has_cfg else ['sample']
+        expected_pngs = [
+            os.path.join(png_dir,
+                         f'{name}_{get_sample_time_string(time_modal, d)}.png')
+            for d in day_ids for name in names
+        ]
+        missing_pngs = [p for p in expected_pngs if not os.path.isfile(p)]
+        if missing_pngs:
+            print(f'[test] 缺少 {len(missing_pngs)} 张可视化图片，'
+                  f'调用 sample.py --visualization 补图 ...')
+            cmd = build_sample_cmd(opt, has_cfg) + ['--visualization']
+            print('[test] 运行: ' + ' '.join(cmd))
+            subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+        else:
+            print('[test] 可视化图片完整，无需补图。')
     else:
         print('[test] --visualization 为 false，跳过可视化。')
 
