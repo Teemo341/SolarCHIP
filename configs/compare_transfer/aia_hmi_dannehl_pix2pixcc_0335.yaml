@@ -83,7 +83,6 @@ lightning:
       monitor: val/loss
       filename: '{epoch:06}'
       mode: min
-      save_last: true
       save_top_k: 1
       every_n_epochs: 1
       # Full checkpoints retain both Adam states for resume.

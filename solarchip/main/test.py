@@ -83,6 +83,55 @@ def metric_mse(pred: torch.Tensor, gt: torch.Tensor) -> float:
     return float(torch.mean((pred.float() - gt.float()) ** 2))
 
 
+def metric_mae(pred: torch.Tensor, gt: torch.Tensor) -> float:
+    """平均绝对误差 MAE：比 MSE 更少被少量高强度区域主导。"""
+    return float(torch.mean((pred.float() - gt.float()).abs()))
+
+
+def metric_mape(pred: torch.Tensor, gt: torch.Tensor) -> float:
+    """平均绝对百分比误差 MAPE (%)。
+
+    定义: mean(|pred - gt| / (|gt| + eps)) * 100, eps = 1.0（物理量单位，如高斯）。
+    eps 用于防止 gt≈0 的噪声像素除零；|gt| >> eps 的像素即标准相对误差。
+    对"少量高强度区域 + 大量近零噪声"的太阳图，MAPE 按像素自身量级归一，
+    不偏向强场、也不会因预测全 0 而得到很小的值。
+    """
+    pred = pred.float()
+    gt = gt.float()
+    eps = 1.0
+    return float(torch.mean((pred - gt).abs() / (gt.abs() + eps)) * 100.0)
+
+
+def metric_nmse(pred: torch.Tensor, gt: torch.Tensor) -> float:
+    """归一化均方误差 NMSE：MSE / var(gt)，跨模态可比，对幅度不敏感。"""
+    pred = pred.float()
+    gt = gt.float()
+    return float(torch.mean((pred - gt) ** 2) / (torch.var(gt) + 1e-8))
+
+
+def metric_pearson(pred: torch.Tensor, gt: torch.Tensor) -> float:
+    """单张图的 Pearson 相关系数（尺度不变，衡量结构/形状）。"""
+    pred = pred.float().flatten()
+    gt = gt.float().flatten()
+    pred = pred - pred.mean()
+    gt = gt - gt.mean()
+    denom = torch.sqrt((pred * pred).sum() * (gt * gt).sum())
+    return float((pred * gt).sum() / denom.clamp_min(1e-12))
+
+
+def metric_ccc(pred: torch.Tensor, gt: torch.Tensor) -> float:
+    """单张图的 Lin 一致性相关系数 CCC（同时惩罚形状偏差与幅度偏差）。"""
+    pred = pred.float()
+    gt = gt.float()
+    pred_mean = pred.mean()
+    gt_mean = gt.mean()
+    cov = ((pred - pred_mean) * (gt - gt_mean)).mean()
+    var_pred = ((pred - pred_mean) ** 2).mean()
+    var_gt = ((gt - gt_mean) ** 2).mean()
+    denom = var_pred + var_gt + (pred_mean - gt_mean) ** 2
+    return float(2.0 * cov / (denom + 1e-8))
+
+
 def metric_psnr(pred: torch.Tensor, gt: torch.Tensor) -> float:
     """峰值信噪比 PSNR（dB），数据范围取真实图动态范围。"""
     mse = torch.mean((pred.float() - gt.float()) ** 2)
@@ -119,8 +168,13 @@ def metric_ssim(pred: torch.Tensor, gt: torch.Tensor,
 # 指标注册表：新增指标只需在这里注册一个 (pred, gt) -> float 的函数
 METRIC_REGISTRY = {
     'mse': metric_mse,
+    'mae': metric_mae,
+    'mape': metric_mape,
+    'nmse': metric_nmse,
     'psnr': metric_psnr,
     'ssim': metric_ssim,
+    'pearson': metric_pearson,
+    'ccc': metric_ccc,
 }
 
 

@@ -87,7 +87,6 @@ lightning:
   modelcheckpoint:
     params:
       monitor: val_loss
-      save_last: True
       save_top_k: 3
       every_n_epochs: 1
       save_weights_only: True

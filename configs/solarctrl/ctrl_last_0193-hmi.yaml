@@ -176,7 +176,6 @@ lightning:
       monitor: val/loss_simple
       filename: '{epoch:06d}_{val_loss_simple:.4f}'
       mode: min 
-      save_last: True
       save_top_k: 3
       every_n_epochs: 1
       save_weights_only: False
