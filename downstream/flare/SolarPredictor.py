@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,26 @@ from downstream.flare.data.class_groups import (
 
 class PretrainedCheckpointError(RuntimeError):
     """Raised when a SolarCHIP checkpoint cannot be loaded without guessing."""
+
+
+def _normalize_loss_type(loss_type: str) -> str:
+    if not isinstance(loss_type, str):
+        raise TypeError(f"loss_type must be a string, got {type(loss_type).__name__}")
+    normalized = loss_type.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "cross_entropy": "cross_entropy",
+        "crossentropy": "cross_entropy",
+        "ce": "cross_entropy",
+        "focal": "focal",
+        "focal_loss": "focal",
+        "focalloss": "focal",
+        "focoloss": "focal",
+    }
+    if normalized not in aliases:
+        raise ValueError(
+            f"loss_type must be 'cross_entropy' or 'focal', got {loss_type!r}"
+        )
+    return aliases[normalized]
 
 
 def _plain_config(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -214,6 +235,8 @@ class SolarPredictor(pl.LightningModule):
         encoder_learning_rate: float = 1e-5,
         weight_decay: float = 1e-4,
         class_weights: Sequence[float] | None = None,
+        loss_type: str = "cross_entropy",
+        focal_gamma: float = 2.0,
         metric_class_ids: Sequence[int] | None = None,
         freeze_encoder_epochs: int = 0,
         scheduler: str = "cosine",
@@ -240,6 +263,11 @@ class SolarPredictor(pl.LightningModule):
             raise ValueError("max_epochs must be positive")
         if min_learning_rate < 0:
             raise ValueError("min_learning_rate cannot be negative")
+
+        self.loss_type = _normalize_loss_type(loss_type)
+        self.focal_gamma = float(focal_gamma)
+        if not math.isfinite(self.focal_gamma) or self.focal_gamma < 0:
+            raise ValueError("focal_gamma must be finite and non-negative")
 
         resolved_base_model = _plain_config(base_model)
         params = resolved_base_model.setdefault("params", {})
@@ -451,6 +479,8 @@ class SolarPredictor(pl.LightningModule):
                 "class_weights": None
                 if class_weights is None
                 else [float(value) for value in class_weights],
+                "loss_type": self.loss_type,
+                "focal_gamma": self.focal_gamma,
                 "metric_class_ids": resolved_metric_ids,
                 "freeze_encoder_epochs": freeze_encoder_epochs,
                 "scheduler": scheduler,
@@ -479,6 +509,14 @@ class SolarPredictor(pl.LightningModule):
 
     def on_save_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         checkpoint["flare_class_groups"] = list(self.class_groups)
+        checkpoint["flare_loss_config"] = {
+            "loss_type": self.loss_type,
+            "focal_gamma": self.focal_gamma,
+            "reduction": "weighted_mean",
+            "class_weights": None
+            if self.class_weights is None
+            else self.class_weights.detach().cpu().tolist(),
+        }
 
     def on_load_checkpoint(self, checkpoint: Mapping[str, Any]) -> None:
         saved_groups = checkpoint.get("flare_class_groups")
@@ -508,6 +546,71 @@ class SolarPredictor(pl.LightningModule):
             raise PretrainedCheckpointError(
                 "A self-contained SolarPredictor restore requires a Lightning "
                 "checkpoint with a 'state_dict' mapping"
+            )
+
+        saved_loss_config = checkpoint.get("flare_loss_config")
+        if saved_loss_config is None:
+            hyperparameters = checkpoint.get("hyper_parameters")
+            if not isinstance(hyperparameters, Mapping):
+                hyperparameters = {}
+            saved_loss_type = hyperparameters.get("loss_type", "cross_entropy")
+            saved_focal_gamma = hyperparameters.get("focal_gamma")
+            saved_reduction = "weighted_mean"
+        elif isinstance(saved_loss_config, Mapping):
+            saved_loss_type = saved_loss_config.get("loss_type")
+            saved_focal_gamma = saved_loss_config.get("focal_gamma")
+            saved_reduction = saved_loss_config.get("reduction")
+        else:
+            raise PretrainedCheckpointError(
+                "Downstream checkpoint contains invalid flare_loss_config metadata"
+            )
+
+        try:
+            normalized_saved_loss_type = _normalize_loss_type(saved_loss_type)
+        except (TypeError, ValueError) as error:
+            raise PretrainedCheckpointError(
+                f"Downstream checkpoint contains invalid loss_type: {error}"
+            ) from error
+        if saved_reduction != "weighted_mean":
+            raise PretrainedCheckpointError(
+                "Downstream checkpoint loss reduction must be 'weighted_mean'"
+            )
+        if normalized_saved_loss_type != self.loss_type:
+            raise PretrainedCheckpointError(
+                "Downstream checkpoint loss_type does not match the current model: "
+                f"{normalized_saved_loss_type!r} != {self.loss_type!r}"
+            )
+        if self.loss_type == "focal":
+            try:
+                normalized_saved_gamma = float(saved_focal_gamma)
+            except (TypeError, ValueError) as error:
+                raise PretrainedCheckpointError(
+                    "Downstream focal checkpoint has no valid focal_gamma"
+                ) from error
+            if (
+                not math.isfinite(normalized_saved_gamma)
+                or normalized_saved_gamma != self.focal_gamma
+            ):
+                raise PretrainedCheckpointError(
+                    "Downstream checkpoint focal_gamma does not match the current "
+                    f"model: {normalized_saved_gamma!r} != {self.focal_gamma!r}"
+                )
+
+        saved_class_weights = state.get("class_weights")
+        if self.class_weights is None:
+            class_weights_match = saved_class_weights is None
+        else:
+            class_weights_match = (
+                torch.is_tensor(saved_class_weights)
+                and tuple(saved_class_weights.shape) == tuple(self.class_weights.shape)
+                and torch.equal(
+                    saved_class_weights.detach().cpu(),
+                    self.class_weights.detach().cpu(),
+                )
+            )
+        if not class_weights_match:
+            raise PretrainedCheckpointError(
+                "Downstream checkpoint class_weights do not match the current model"
             )
 
         expected_state = self.state_dict()
@@ -752,6 +855,24 @@ class SolarPredictor(pl.LightningModule):
     def forward(self, hmi: torch.Tensor) -> torch.Tensor:
         return self.classifier(self.encode_features(hmi))
 
+    def _classification_loss(
+        self, logits: torch.Tensor, labels: torch.Tensor
+    ) -> torch.Tensor:
+        if self.loss_type == "cross_entropy":
+            return F.cross_entropy(logits, labels, weight=self.class_weights)
+
+        log_probs = F.log_softmax(logits.float(), dim=-1)
+        log_pt = log_probs.gather(1, labels.unsqueeze(1)).squeeze(1)
+        one_minus_pt = (-torch.expm1(log_pt)).clamp_min(torch.finfo(log_pt.dtype).eps)
+        focal_factor = one_minus_pt.pow(self.focal_gamma)
+        per_sample_loss = -focal_factor * log_pt
+
+        if self.class_weights is None:
+            return per_sample_loss.mean()
+
+        sample_weights = self.class_weights[labels]
+        return (sample_weights * per_sample_loss).sum() / sample_weights.sum()
+
     def _shared_step(
         self, batch: Mapping[str, torch.Tensor]
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -768,7 +889,7 @@ class SolarPredictor(pl.LightningModule):
                 f"class_groups={list(self.class_groups)}"
             )
         logits = self(batch["hmi"].float())
-        loss = F.cross_entropy(logits, labels, weight=self.class_weights)
+        loss = self._classification_loss(logits, labels)
         return loss, logits, labels
 
     def training_step(

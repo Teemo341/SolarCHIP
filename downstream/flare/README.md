@@ -162,6 +162,16 @@ python -m solarchip.main.train \
 
 配置只读取 `modal_list: ['hmi']`。SolarPredictor 接收与 Dataset 相同的 `class_groups`，并用组数自动确定分类头、confusion matrix、class-weight 长度及指标类别数；默认输出 4 类。训练启动前会逐个核对 train/validation/test Dataset 的规范化分组，连组顺序都必须完全一致，否则在首个 batch 前报错。checkpoint 同时保存并校验分组语义，因此即便两种方案恰好都是四分类，也不会静默错用 logits。旧的六分类 downstream checkpoint 不能完整 resume 到默认四分类，应从 SolarCHIP 预训练 checkpoint 开始新训练。checkpoint 仍以 `val_loss` 选择，且 `save_weights_only: false`、`save_last: true`。
 
+分类目标通过模型超参数选择，默认仍是普通交叉熵：
+
+```yaml
+loss_type: cross_entropy  # 或 focal
+focal_gamma: 2.0          # 仅 focal 使用，必须 >= 0
+class_weights: null       # 可选：每个分组类别一个严格正权重
+```
+
+`focal` 使用多类 softmax focal loss：`-(1-p_t)^gamma log(p_t)`。设置 `class_weights` 后，它同时作为交叉熵的类别权重或 focal loss 的类别 alpha 权重；两种 loss 都按 batch 内真实类别权重之和归一化，因此 `focal_gamma: 0` 与相同权重下的 `cross_entropy` 完全退化一致。类别权重整体乘一个常数不会改变 loss。loss 类型、Focal gamma、归约方式和类别权重都会进入完整 Lightning checkpoint 的续训兼容性检查；旧 checkpoint 没有 loss metadata 时只按交叉熵解释，不能静默改成 Focal 续训。
+
 前 5 epoch 冻结预训练分支时，参数仍从开始就保留在 optimizer 中，forward 用 `no_grad` 跳过其梯度；这避免在后续解冻时改变 optimizer 参数组。若改为多 GPU，必须显式使用 `strategy: ddp_find_unused_parameters_true`。
 
 ## 验证

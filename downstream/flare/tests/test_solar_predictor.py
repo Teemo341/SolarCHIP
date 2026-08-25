@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, Dataset
 
@@ -167,6 +168,8 @@ class SolarPredictorTests(unittest.TestCase):
         self.assertEqual(model_groups, DEFAULT_CLASS_GROUPS)
         self.assertEqual(train_groups, model_groups)
         self.assertEqual(validation_groups, model_groups)
+        self.assertEqual(config.model.params.loss_type, "cross_entropy")
+        self.assertEqual(float(config.model.params.focal_gamma), 2.0)
 
     def test_cnn_forward_keeps_only_hmi_encoder_mapper_and_head(self) -> None:
         config = cnn_config()
@@ -245,6 +248,208 @@ class SolarPredictorTests(unittest.TestCase):
                 class_groups=["0ABC", "MX"],
                 class_weights=[0.0, 1.0],
             )
+
+    def test_default_cross_entropy_matches_pytorch(self) -> None:
+        config = cnn_config()
+        checkpoint = self.root / "cross-entropy.ckpt"
+        write_solar_checkpoint(checkpoint, config)
+        model = self.make_predictor(config, checkpoint)
+        logits = torch.tensor(
+            [
+                [2.0, 0.1, -0.5, -1.0],
+                [-1.0, 0.3, 1.5, 0.2],
+                [0.2, 1.0, 0.5, -0.4],
+            ]
+        )
+        labels = torch.tensor([0, 2, 1])
+
+        actual = model._classification_loss(logits, labels)
+        expected = F.cross_entropy(logits, labels)
+
+        self.assertEqual(model.loss_type, "cross_entropy")
+        torch.testing.assert_close(actual, expected)
+
+    def test_weighted_focal_loss_matches_formula_and_backpropagates(self) -> None:
+        config = cnn_config()
+        checkpoint = self.root / "focal.ckpt"
+        write_solar_checkpoint(checkpoint, config)
+        model = self.make_predictor(
+            config,
+            checkpoint,
+            loss_type="focal",
+            focal_gamma=2.0,
+            class_weights=[1.0, 2.0, 3.0, 4.0],
+        )
+        logits = torch.tensor(
+            [
+                [2.0, 0.1, -0.5, -1.0],
+                [-1.0, 0.3, 1.5, 0.2],
+                [0.2, 1.0, 0.5, -0.4],
+            ],
+            requires_grad=True,
+        )
+        labels = torch.tensor([0, 2, 1])
+
+        actual = model._classification_loss(logits, labels)
+        log_pt = F.log_softmax(logits, dim=-1).gather(1, labels.unsqueeze(1)).squeeze(1)
+        per_sample = -((1.0 - log_pt.exp()) ** 2.0) * log_pt
+        sample_weights = model.class_weights[labels]
+        expected = (sample_weights * per_sample).sum() / sample_weights.sum()
+
+        torch.testing.assert_close(actual, expected)
+        self.assertTrue(torch.isfinite(actual))
+        actual.backward()
+        self.assertTrue(torch.isfinite(logits.grad).all())
+
+    def test_focal_gamma_zero_matches_weighted_cross_entropy(self) -> None:
+        config = cnn_config()
+        checkpoint = self.root / "focal-gamma-zero.ckpt"
+        write_solar_checkpoint(checkpoint, config)
+        model = self.make_predictor(
+            config,
+            checkpoint,
+            loss_type="focal_loss",
+            focal_gamma=0.0,
+            class_weights=[1.0, 2.0, 3.0, 4.0],
+        )
+        focal_logits = torch.tensor(
+            [
+                [2.0, 0.1, -0.5, -1.0],
+                [-1.0, 0.3, 1.5, 0.2],
+                [0.2, 1.0, 0.5, -0.4],
+            ],
+            requires_grad=True,
+        )
+        labels = torch.tensor([0, 2, 1])
+
+        actual = model._classification_loss(focal_logits, labels)
+        actual.backward()
+        focal_gradient = focal_logits.grad.detach().clone()
+
+        ce_logits = focal_logits.detach().clone().requires_grad_(True)
+        expected = F.cross_entropy(ce_logits, labels, weight=model.class_weights)
+        expected.backward()
+
+        self.assertEqual(model.loss_type, "focal")
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(focal_gradient, ce_logits.grad)
+
+    def test_fractional_gamma_is_finite_for_extreme_bfloat16_logits(self) -> None:
+        config = cnn_config()
+        checkpoint = self.root / "focal-extreme.ckpt"
+        write_solar_checkpoint(checkpoint, config)
+        model = self.make_predictor(
+            config,
+            checkpoint,
+            loss_type="focal",
+            focal_gamma=0.5,
+        )
+        logits = torch.tensor(
+            [[1.0e4, -1.0e4, 0.0, 0.0], [-1.0e4, 1.0e4, 0.0, 0.0]],
+            dtype=torch.bfloat16,
+            requires_grad=True,
+        )
+        labels = torch.tensor([0, 0])
+
+        loss = model._classification_loss(logits, labels)
+        loss.backward()
+
+        self.assertEqual(loss.dtype, torch.float32)
+        self.assertTrue(torch.isfinite(loss))
+        self.assertTrue(torch.isfinite(logits.grad).all())
+
+    def test_loss_options_are_normalized_and_validated(self) -> None:
+        config = cnn_config()
+        checkpoint = self.root / "loss-options.ckpt"
+        write_solar_checkpoint(checkpoint, config)
+
+        typo_alias = self.make_predictor(
+            config,
+            checkpoint,
+            loss_type="focoloss",
+        )
+        self.assertEqual(typo_alias.loss_type, "focal")
+        self.assertEqual(typo_alias.hparams.loss_type, "focal")
+
+        with self.assertRaisesRegex(ValueError, "loss_type"):
+            self.make_predictor(config, checkpoint, loss_type="dice")
+        with self.assertRaisesRegex(ValueError, "focal_gamma"):
+            self.make_predictor(config, checkpoint, focal_gamma=-1.0)
+        with self.assertRaisesRegex(ValueError, "focal_gamma"):
+            self.make_predictor(config, checkpoint, focal_gamma=float("nan"))
+        with self.assertRaisesRegex(ValueError, "focal_gamma"):
+            self.make_predictor(config, checkpoint, focal_gamma=float("inf"))
+
+    def test_checkpoint_rejects_changed_loss_gamma_and_class_weights(self) -> None:
+        config = cnn_config()
+        base_checkpoint = self.root / "loss-checkpoint-base.ckpt"
+        write_solar_checkpoint(base_checkpoint, config)
+
+        focal_model = self.make_predictor(
+            config,
+            base_checkpoint,
+            loss_type="focal",
+            focal_gamma=2.0,
+            class_weights=[1.0, 2.0, 3.0, 4.0],
+        )
+        payload = {
+            "state_dict": focal_model.state_dict(),
+            "hyper_parameters": dict(focal_model.hparams),
+        }
+        focal_model.on_save_checkpoint(payload)
+
+        cross_entropy_model = self.make_predictor(
+            config,
+            base_checkpoint,
+            class_weights=[1.0, 2.0, 3.0, 4.0],
+        )
+        with self.assertRaisesRegex(PretrainedCheckpointError, "loss_type"):
+            cross_entropy_model.on_load_checkpoint(payload)
+
+        changed_gamma_model = self.make_predictor(
+            config,
+            base_checkpoint,
+            loss_type="focal",
+            focal_gamma=1.0,
+            class_weights=[1.0, 2.0, 3.0, 4.0],
+        )
+        with self.assertRaisesRegex(PretrainedCheckpointError, "focal_gamma"):
+            changed_gamma_model.on_load_checkpoint(payload)
+
+        changed_weights_model = self.make_predictor(
+            config,
+            base_checkpoint,
+            loss_type="focal",
+            focal_gamma=2.0,
+            class_weights=[1.0, 1.0, 1.0, 1.0],
+        )
+        with self.assertRaisesRegex(PretrainedCheckpointError, "class_weights"):
+            changed_weights_model.on_load_checkpoint(payload)
+
+    def test_legacy_checkpoint_is_cross_entropy_only(self) -> None:
+        config = cnn_config()
+        base_checkpoint = self.root / "legacy-loss-base.ckpt"
+        write_solar_checkpoint(base_checkpoint, config)
+        model = self.make_predictor(config, base_checkpoint)
+        legacy_hparams = dict(model.hparams)
+        legacy_hparams.pop("loss_type")
+        legacy_hparams.pop("focal_gamma")
+        payload = {
+            "state_dict": model.state_dict(),
+            "hyper_parameters": legacy_hparams,
+            "flare_class_groups": list(model.class_groups),
+        }
+
+        restored_cross_entropy = self.make_predictor(config, base_checkpoint)
+        restored_cross_entropy.on_load_checkpoint(payload)
+
+        focal_model = self.make_predictor(
+            config,
+            base_checkpoint,
+            loss_type="focal",
+        )
+        with self.assertRaisesRegex(PretrainedCheckpointError, "loss_type"):
+            focal_model.on_load_checkpoint(payload)
 
     def test_strict_loader_rejects_wrong_encoder_config(self) -> None:
         checkpoint = self.root / "strict.ckpt"
