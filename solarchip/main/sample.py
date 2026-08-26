@@ -189,6 +189,14 @@ def get_parser():
              'pt 单独放一层，便于后续转成其它数据格式。',
     )
     parser.add_argument(
+        '--sample_subdir',
+        type=str,
+        default=None,
+        help='在每个模型的保存目录下再加一层子目录（如 checkpoint 名），'
+             '最终路径为 logs/sample/pt/{目标模态}/{模型名字}/{sample_subdir}/，'
+             '用于按权重分别存放采样结果。',
+    )
+    parser.add_argument(
         '--target_modal',
         type=str,
         default=None,
@@ -227,6 +235,14 @@ def get_parser():
         help='采样后调用 solarplot.py 生成可视化图片，保存到 '
              'logs/sample/png/{目标模态}/{模型名字}/，命名与 pt 一致'
              '（sample_<时间>.png / sample_cfg_<时间>.png），只补充缺失的图。',
+    )
+    parser.add_argument(
+        '--enhance',
+        type=str,
+        default='none',
+        choices=['none', 'log1p'],
+        help='可视化显示增强: none=原始物理量(默认，对应 #sym:enhance none)，'
+             'log1p=signed-log1p 动态范围压缩。',
     )
     return parser
 
@@ -533,6 +549,7 @@ class RawTensorLogger:
 
     def __init__(self, save_dir: str):
         self.save_dir = save_dir
+        self.existing = 0
         os.makedirs(save_dir, exist_ok=True)
 
     def log_batch(self, tensors: dict, times):
@@ -552,6 +569,9 @@ class RawTensorLogger:
                     img = img[0]  # (1, H, W) -> (H, W)
                 fname = f'{name}_{times[j]}.pt'
                 path = os.path.join(self.save_dir, fname)
+                if os.path.isfile(path):
+                    self.existing += 1
+                    continue
                 torch.save(img, path)
 
 
@@ -622,14 +642,20 @@ def run_original_copy(opt):
         vis_made = vis_skipped = 0
 
     copied, skipped = 0, 0
+    copied_skip = 0
+    enhance = None if opt.enhance == 'none' else opt.enhance
     for day_id in tqdm(day_ids, desc='Copying original data'):
         src = get_modal_dir(modal, day_id)[1]
         if not os.path.isfile(src):
             skipped += 1
             print(f'[sample] 缺少数据文件，跳过: {src}')
             continue
-        shutil.copy2(src, os.path.join(save_dir, os.path.basename(src)))
-        copied += 1
+        dst = os.path.join(save_dir, os.path.basename(src))
+        if os.path.isfile(dst):
+            copied_skip += 1
+        else:
+            shutil.copy2(src, dst)
+            copied += 1
 
         if opt.visualization:
             png_path = os.path.join(
@@ -640,7 +666,8 @@ def run_original_copy(opt):
             data = torch.load(src, weights_only=True).numpy()
             dt = transfer_id_to_date(day_id)
             time_int = int(dt.strftime('%Y%m%d%H%M'))
-            solarplot(data, modal, format_timestamp(time_int), png_path)
+            solarplot(data, modal, format_timestamp(time_int), png_path,
+                      enhance=enhance)
             vis_made += 1
 
     if opt.visualization:
@@ -648,7 +675,8 @@ def run_original_copy(opt):
               f'已存在跳过 {vis_skipped} 张, 保存在 {png_dir}')
 
     print(f'[sample] original 完成: 复制 {copied} 个文件, '
-          f'跳过 {skipped} 个缺失文件, 保存在 {save_dir}')
+          f'已存在跳过 {copied_skip} 个文件, 跳过 {skipped} 个缺失文件, '
+          f'保存在 {save_dir}')
 
 
 # ----------------------------------------------------------------------
@@ -687,6 +715,58 @@ def visualize_tensors(results, times, day_ids, target_modal, png_dir):
     return made, skipped
 
 
+def resolve_modals_from_config(config):
+    """仅从训练配置解析 (模型类别, 目标模态, 条件模态)，不实例化模型。
+
+    已有采样需要跳过时使用，避免为纯出图加载模型权重。
+    """
+    cls_name = config.model.target.rsplit('.', 1)[-1]
+    params = config.model.params
+    if cls_name in DIFFUSION_MODEL_NAMES:
+        target = params.first_stage_key
+        time_modal = (params.cond_stage_key if cls_name == 'SolarControl'
+                      else params.first_stage_key)
+    elif cls_name in COMPARE_MODEL_NAMES:
+        target = params.target_modal
+        time_modal = params.source_modal
+    else:
+        raise NotImplementedError(
+            f'暂不支持对 {cls_name} 采样。目前支持: '
+            f'扩散模型 {sorted(DIFFUSION_MODEL_NAMES)}, '
+            f'对比模型 {sorted(COMPARE_MODEL_NAMES)}。')
+    return cls_name, target, time_modal
+
+
+def visualize_existing_pt(all_ids, time_modal, target_modal, save_dir, png_dir,
+                          result_names, enhance):
+    """从已有 pt 直接出图（不重新采样），只补充缺失的 png。
+
+    返回 (生成数, 已存在跳过数, 缺 pt 跳过数)。
+    """
+    # 按需导入，避免不需要可视化时加载 sunpy
+    from solarchip.visualization.solarplot import solarplot, format_timestamp
+    os.makedirs(png_dir, exist_ok=True)
+    made = skipped = missing = 0
+    for d in tqdm(all_ids, desc='Visualizing existing pt'):
+        t = get_sample_time_string(time_modal, d)
+        for name in result_names:
+            png_path = os.path.join(png_dir, f'{name}_{t}.png')
+            if os.path.isfile(png_path):
+                skipped += 1
+                continue
+            pt_path = os.path.join(save_dir, f'{name}_{t}.pt')
+            if not os.path.isfile(pt_path):
+                missing += 1
+                continue
+            data = torch.load(pt_path, weights_only=True).numpy()
+            dt = transfer_id_to_date(int(d))
+            time_int = int(dt.strftime('%Y%m%d%H%M'))
+            solarplot(data, target_modal, format_timestamp(time_int), png_path,
+                      enhance=enhance)
+            made += 1
+    return made, skipped, missing
+
+
 # ----------------------------------------------------------------------
 # 主流程
 # ----------------------------------------------------------------------
@@ -702,106 +782,107 @@ def main():
     if not os.path.isdir(logdir):
         raise FileNotFoundError(f'训练日志目录不存在: {logdir}')
 
-    # 1. 训练日志配置 + checkpoint + 模型名字
+    # 1. 训练日志配置 + 模型名字（已有采样时无需加载模型权重）
     config = load_project_config(logdir)
-    ckpt_path = resolve_checkpoint(logdir, opt.ckpt)
     model_name = get_model_name(logdir)
-    device = select_device(opt.device)
-    print(f'[sample] 模型名字: {model_name}, checkpoint: {ckpt_path}, device: {device}')
+    cls_name, target_modal, time_modal = resolve_modals_from_config(config)
+    print(f'[sample] 模型名字: {model_name}, 模型类别: {cls_name}, '
+          f'目标模态: {target_modal}, 时间模态: {time_modal}')
 
-    seed_everything(opt.seed)
-
-    # 2. 模型
-    model = instantiate_model(config)
-    model.to(device)
-    model.eval()
-    cls_name = model.__class__.__name__
-    print(f'[sample] 模型类别: {cls_name}')
-    if cls_name not in DIFFUSION_MODEL_NAMES | COMPARE_MODEL_NAMES:
-        raise NotImplementedError(
-            f'暂不支持对 {cls_name} 采样。目前支持: '
-            f'扩散模型 {sorted(DIFFUSION_MODEL_NAMES)}, '
-            f'对比模型 {sorted(COMPARE_MODEL_NAMES)}。')
-
-    # 3. 测试集（不 shuffle，torch_augment_type=[1024,0,0]）
+    # 2. 测试集（不 shuffle，torch_augment_type=[1024,0,0]）
     data_params = config.data.params
-    batch_size = opt.batch_size if opt.batch_size is not None else int(data_params.batch_size)
+    batch_size = (opt.batch_size if opt.batch_size is not None
+                  else int(data_params.batch_size))
     num_workers = (opt.num_workers if opt.num_workers is not None
                    else int(data_params.get('num_workers', 0)))
     val_loader, val_params, val_dataset = build_validation_loader(
         config, opt.time_interval, opt.time_step, batch_size, num_workers)
+    all_ids = [int(i) for i in val_dataset.exist_idx]
+    print(f'[sample] 测试集共 {len(all_ids)} 个时间点')
 
-    # 4. 目标模态与反归一化
-    if cls_name in DIFFUSION_MODEL_NAMES:
-        target_modal = model.first_stage_key
-    else:
-        target_modal = model.target_modal
-    log1p_scale = float(val_params.get('log1p_scale', 1.0))
-    denormalize = make_denormalizer(model, target_modal, log1p_scale)
-
-    # 文件名里的采集时间来自条件模态（无条件模型退回目标模态）
-    if cls_name == 'SolarControl':
-        time_modal = model.cond_stage_key
-    elif cls_name in COMPARE_MODEL_NAMES:
-        time_modal = model.source_modal
-    else:
-        time_modal = model.first_stage_key
-    print(f'[sample] 文件名采集时间取自条件模态: {time_modal}')
-
-    # 5. 载入权重
-    load_weights(model, ckpt_path)
-
-    # 6. 保存目录: logs/sample/pt/{目标模态}/{模型名字}/
+    # 3. 保存目录与采样结果名
     save_dir = os.path.join(opt.save_root, target_modal, model_name)
+    if opt.sample_subdir:
+        save_dir = os.path.join(save_dir, opt.sample_subdir)
+    os.makedirs(save_dir, exist_ok=True)
+    png_dir = get_png_dir(opt.save_root, target_modal, model_name)
     logger = RawTensorLogger(save_dir)
     print(f'[sample] 保存目录: {save_dir}')
 
-    cfg_scale = None
-    if cls_name == 'SolarControl' and not opt.no_cfg:
-        cfg_scale = opt.cfg_scale
+    cfg_scale = (opt.cfg_scale
+                 if cls_name == 'SolarControl' and not opt.no_cfg else None)
+    result_names = ['sample', 'sample_cfg'] if cfg_scale is not None else ['sample']
 
-    # 7. 逐 batch 采样并保存（每张图单独一个 .pt），可选可视化
-    png_dir = get_png_dir(opt.save_root, target_modal, model_name)
-    vis_made = vis_skipped = 0
+    # 4. 已有采样跳过：目标 pt 全部存在的时间点不重新采样（不覆盖已有文件）
+    missing_ids = [
+        d for d in all_ids
+        if not all(os.path.isfile(os.path.join(
+            save_dir, f'{n}_{get_sample_time_string(time_modal, d)}.pt'))
+            for n in result_names)
+    ]
+    print(f'[sample] 已有采样结果: {len(all_ids) - len(missing_ids)}/{len(all_ids)} '
+          f'个时间点, 需补采样: {len(missing_ids)} 个时间点')
+
     total_batches = 0
-    for batch_idx, batch in enumerate(tqdm(val_loader, desc='Sampling batches')):
-        if cls_name in DIFFUSION_MODEL_NAMES:
-            results = sample_diffusion_batch(
-                model, batch, denormalize,
-                cfg_scale=cfg_scale, verbose=not opt.quiet)
-        else:
-            results = sample_compare_batch(model, batch, denormalize)
+    if missing_ids:
+        device = select_device(opt.device)
+        ckpt_path = resolve_checkpoint(logdir, opt.ckpt)
+        print(f'[sample] checkpoint: {ckpt_path}, device: {device}')
+        seed_everything(opt.seed)
 
-        # HMI 目标模态：乘上日面 mask，把盘外模型产生的干扰项置零
-        if target_modal == 'hmi':
-            results = apply_hmi_solar_mask(results)
+        # 模型
+        model = instantiate_model(config)
+        model.to(device)
+        model.eval()
+        log1p_scale = float(val_params.get('log1p_scale', 1.0))
+        denormalize = make_denormalizer(model, target_modal, log1p_scale)
+        load_weights(model, ckpt_path)
 
-        # 该 batch 内每张图的 day id -> 条件模态采集时间串
-        first_tensor = next(iter(batch.values()))
-        b = first_tensor.shape[0]
-        base = batch_idx * batch_size
-        day_ids = [int(val_dataset.exist_idx[base + j]) for j in range(b)]
-        times = [get_sample_time_string(time_modal, d) for d in day_ids]
+        # 只保留缺失的时间点，避免对已存在数据重复采样
+        val_dataset.exist_idx = missing_ids
+        sample_loader = DataLoader(val_dataset, batch_size=batch_size,
+                                   shuffle=False, num_workers=num_workers,
+                                   drop_last=False)
+        for batch_idx, batch in enumerate(tqdm(sample_loader, desc='Sampling batches')):
+            if cls_name in DIFFUSION_MODEL_NAMES:
+                results = sample_diffusion_batch(
+                    model, batch, denormalize,
+                    cfg_scale=cfg_scale, verbose=not opt.quiet)
+            else:
+                results = sample_compare_batch(model, batch, denormalize)
 
-        logger.log_batch(results, times)
+            # HMI 目标模态：乘上日面 mask，把盘外模型产生的干扰项置零
+            if target_modal == 'hmi':
+                results = apply_hmi_solar_mask(results)
 
-        if opt.visualization:
-            made, skipped = visualize_tensors(
-                results, times, day_ids, target_modal, png_dir)
-            vis_made += made
-            vis_skipped += skipped
+            # 该 batch 内每张图的 day id -> 条件模态采集时间串
+            first_tensor = next(iter(batch.values()))
+            base = batch_idx * batch_size
+            b = first_tensor.shape[0]
+            day_ids = [int(val_dataset.exist_idx[base + j]) for j in range(b)]
+            times = [get_sample_time_string(time_modal, d) for d in day_ids]
 
-        total_batches += 1
-        if opt.max_batches is not None and total_batches >= opt.max_batches:
-            print(f'[sample] 达到 --max_batches={opt.max_batches}，提前结束。')
-            break
+            logger.log_batch(results, times)
 
+            total_batches += 1
+            if opt.max_batches is not None and total_batches >= opt.max_batches:
+                print(f'[sample] 达到 --max_batches={opt.max_batches}，提前结束。')
+                break
+        print(f'[sample] 补采样完成: {total_batches} 个 batch '
+              f'(已存在跳过 {logger.existing} 个文件), 结果保存在 {save_dir}')
+    else:
+        print('[sample] 所有时间点采样结果已存在，跳过模型加载与采样。')
+
+    # 5. 可视化：从已有 pt（含刚补采样的）直接出图，只补充缺失 png
     if opt.visualization:
-        print(f'[sample] 可视化完成: 生成 {vis_made} 张, 已存在跳过 {vis_skipped} 张, '
-              f'保存在 {png_dir}')
-
-    print(f'[sample] 完成: {len(val_dataset)} 个样本配置, '
-          f'采样 {total_batches} 个 batch, 结果保存在 {save_dir}')
+        enhance = None if opt.enhance == 'none' else opt.enhance
+        made, skipped, missing = visualize_existing_pt(
+            all_ids, time_modal, target_modal, save_dir, png_dir,
+            result_names, enhance)
+        print(f'[sample] 可视化完成: 生成 {made} 张, 已存在跳过 {skipped} 张, '
+              f'缺 pt 跳过 {missing} 张, 保存在 {png_dir}')
+    else:
+        print('[sample] --visualization 为 false，跳过可视化。')
 
 
 if __name__ == '__main__':
