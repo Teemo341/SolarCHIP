@@ -83,7 +83,6 @@ lightning:
       monitor: val/loss
       filename: '{epoch:06}'
       mode: min
-      save_last: true
       save_top_k: 1
       every_n_epochs: 1
       # Full checkpoints retain both Adam states for resume.
@@ -92,6 +91,6 @@ lightning:
   trainer:
     strategy: ddp_find_unused_parameters_true
     num_sanity_val_steps: 0      # latent stats 在 on_train_start 完整预计算后再做验证
-    max_epochs: 400
-    precision: 32-true
-    log_every_n_steps: 4
+    max_epochs: 80
+    precision: bf16-mixed
+    log_every_n_steps: 1

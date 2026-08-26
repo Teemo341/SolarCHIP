@@ -70,6 +70,20 @@ class TrainerSetup:
         self._init_logger()
         self._init_callbacks()
 
+    @property
+    def _modelckpt_target(self) -> str:
+        """返回与当前 Trainer 同源的 ModelCheckpoint 类路径。
+
+        本仓库环境同时安装了 lightning 与 pytorch_lightning 两套独立的类体系:
+        train.py 优先从 lightning.pytorch 导入 Trainer, 而这里如果写死
+        pytorch_lightning.callbacks.ModelCheckpoint, Trainer.checkpoint_callbacks
+        用 isinstance 识别不到该 callback, 会再自动追加一个默认 ModelCheckpoint,
+        额外在 logger 目录下写一份 {epoch}-{step}.ckpt。
+        """
+        if pl.__name__ == "lightning.pytorch":
+            return "lightning.pytorch.callbacks.ModelCheckpoint"
+        return "pytorch_lightning.callbacks.ModelCheckpoint"
+
     def _init_logger(self):
         default_logger_cfgs = {
             "tensorboard": {
@@ -130,6 +144,24 @@ class TrainerSetup:
         }
         if version.parse(pl.__version__) >= version.parse('1.4.0'):
             default_callbacks_cfg.update({'checkpoint_callback': self._init_checkpoint_callback()})
+        # 独占维护 last.ckpt: 每个 epoch 都完整保存一遍(同名覆盖),
+        # 因此训练结束时 last.ckpt 永远是最后一个 epoch 的权重,
+        # `-r <logdir>` 也可以直接从最新进度续训。
+        default_callbacks_cfg.update({
+            'last_epoch_checkpoint': {
+                'target': self._modelckpt_target,
+                'params': {
+                    'dirpath': self.ckptdir,
+                    'filename': 'last',
+                    'monitor': None,
+                    'save_top_k': 1,
+                    'every_n_epochs': 1,
+                    'save_weights_only': False,
+                    'auto_insert_metric_name': False,
+                    'verbose': False,
+                }
+            }
+        })
         if "callbacks" in self.lightning_config:
             callbacks_cfg = self.lightning_config.callbacks
         else:
@@ -162,7 +194,7 @@ class TrainerSetup:
         # modelcheckpoint - use TrainResult/EvalResult(checkpoint_on=metric) to
         # specify which metric is used to determine best models
         default_modelckpt_cfg = {
-            "target": "pytorch_lightning.callbacks.ModelCheckpoint",
+            "target": self._modelckpt_target,
             "params": {
                 "dirpath": self.ckptdir,
                 "filename": "{epoch:06}",
@@ -182,6 +214,9 @@ class TrainerSetup:
         else:
             modelckpt_cfg = OmegaConf.create()
         modelckpt_cfg = OmegaConf.merge(default_modelckpt_cfg, modelckpt_cfg)
+        # last.ckpt 统一由 last_epoch_checkpoint 每 epoch 维护(最后一个 epoch),
+        # 这里关闭 save_last, 避免两个回调同时写 last.ckpt。
+        modelckpt_cfg.params.save_last = False
         print(f"Merged modelckpt-cfg: \n{modelckpt_cfg}")
         if version.parse(pl.__version__) < version.parse('1.4.0'):
             self.trainer_kwargs["checkpoint_callback"] = instantiate_from_config(modelckpt_cfg)

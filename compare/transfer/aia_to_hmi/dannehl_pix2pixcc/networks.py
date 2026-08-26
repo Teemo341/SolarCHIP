@@ -4,9 +4,9 @@ The implementation is self-contained, but follows the architecture in the
 authors' archived ``pix2pixCC2`` release: a 4-down/9-residual/4-up generator
 and one 70x70 PatchGAN discriminator that exposes intermediate features.
 
-For MUSA training, InstanceNorm is implemented using equivalent per-channel
-GroupNorm. This avoids the NativeBatchNormBackward kernel used internally by
-PyTorch InstanceNorm on some backends.
+InstanceNorm is used with ``eps = 1e-2`` (instead of the PyTorch default
+1e-5) so that the per-layer backward amplification stays bounded on the
+smooth solar images; see ``_stable_instance_norm``.
 """
 
 from __future__ import annotations
@@ -19,18 +19,24 @@ from torch import nn
 
 
 def _stable_instance_norm(channels: int) -> nn.Module:
-    """Return InstanceNorm-equivalent GroupNorm.
+    """Return an InstanceNorm2d layer with a deliberately large ``eps``.
 
-    GroupNorm with one group per channel normalizes every sample and channel
-    independently over its spatial dimensions. This is equivalent to
-    InstanceNorm without affine parameters or running statistics, while
-    avoiding MUSA's NativeBatchNormBackward implementation.
+    ``eps`` is much larger than the PyTorch default (1e-5). The backward
+    pass of instance normalization scales the gradient by
+    ``1 / sqrt(var + eps)``. Solar images contain large nearly constant
+    regions, so after a few training steps many generator channels have
+    spatial variance far below 1e-4; with a small ``eps`` every one of the
+    ~26 normalization layers would amplify the backward gradient by up to
+    100x, and the product over the residual blocks overflows float32
+    (~1e38), producing Inf/NaN gradients. ``eps = 1e-2`` caps the per-layer
+    amplification at 10x, which keeps the total amplification comfortably
+    inside float32 while only suppressing channels that are already nearly
+    constant.
     """
 
-    return nn.GroupNorm(
-        num_groups=channels,
-        num_channels=channels,
-        eps=1e-4,
+    return nn.InstanceNorm2d(
+        num_features=channels,
+        eps=1e-2,
         affine=False,
     )
 

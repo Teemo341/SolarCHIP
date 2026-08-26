@@ -139,7 +139,6 @@ lightning:
       monitor: val/loss_simple_ema
       filename: '{epoch:06}'
       mode: min
-      save_last: True
       save_top_k: 3
       every_n_epochs: 1
       save_weights_only: False
@@ -149,4 +148,4 @@ lightning:
     num_sanity_val_steps: 0      # latent stats 在 on_train_start 完整预计算后再做验证
     max_epochs: 1600
     precision: bf16-mixed
-    log_every_n_steps: 4
+    log_every_n_steps: 1

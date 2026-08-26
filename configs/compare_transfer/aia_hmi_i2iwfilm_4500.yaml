@@ -20,7 +20,12 @@ model:
     max_epochs: 200
     learning_rate: 1.0e-4
     weight_decay: 1.0e-4
+    # Strong pixels are only about 0.56% of the training set. Average the two regions separately, but cap the strong region at 10% of total loss. The previous 50% setting over-emphasized each strong pixel by about 179x and produced saturated blocks; 10% reduces that ratio to about 20x.
+    reconstruction_loss_type: balanced_smooth_l1
+    strong_field_loss_fraction: 0.10
+    smooth_l1_beta: 1.0
     lambda_reconstruction: 1.0
+    # Stage 1 trains this source-only distillation path concurrently; Stage 2 fixes the paired teacher/generator and continues distillation only.
     lambda_guidance: 1.0
     minimum_learning_rate: 1.0e-7
     output_activation: identity
@@ -43,10 +48,7 @@ data:
         modal_list: ['hmi', '4500']
         enhance_type: ['log1p', 'zscore']
         load_imgs: False
-        torch_augment_type:
-          - 1024
-          - 0.5
-          - 360
+        torch_augment_type: [1024, 0.5, 0]
         time_interval:
           - 0
           - 5000
@@ -57,13 +59,10 @@ data:
         modal_list: ['hmi', '4500']
         enhance_type: ['log1p', 'zscore']
         load_imgs: False
-        torch_augment_type:
-          - 1024
-          - 0.5
-          - 360
+        torch_augment_type: [1024, 0.0, 0]
         time_interval:
           - 5000
-          - 6000
+          - 5400
         time_step: 1
 
 lightning:
@@ -72,7 +71,8 @@ lightning:
       target: solarchip.utils.callback.SolarImageLogger
       params:
         log_on_batch_idx: False
-        every_n_train_epochs: 20
+        # 第 N、2N、3N... 个 train epoch 各绘制一次 train/validation 图像。
+        every_n_train_epochs: 10
         max_images: 2
 
   modelcheckpoint:
@@ -80,14 +80,14 @@ lightning:
       monitor: val/loss
       filename: '{epoch:06}'
       mode: min
-      save_last: true
       save_top_k: 1
       every_n_epochs: 1
+      # Full checkpoints retain both Adam states for resume.
       save_weights_only: False
 
   trainer:
     strategy: ddp_find_unused_parameters_true
-    num_sanity_val_steps: 0
-    max_epochs: 800
+    num_sanity_val_steps: 2
+    max_epochs: 200
     precision: bf16-mixed
-    log_every_n_steps: 4
+    log_every_n_steps: 1
