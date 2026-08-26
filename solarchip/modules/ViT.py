@@ -44,9 +44,15 @@ class Encoder(clipvit):
 class Decoder(nn.Module):
     def __init__(self, input_dim:int, input_resolution: int, patch_size: int, hidden_dim: int, layers: int, heads: int):
         super().__init__()
+        if input_resolution % patch_size != 0:
+            raise ValueError(
+                "input_resolution must be divisible by patch_size, "
+                f"got {input_resolution} and {patch_size}"
+            )
         self.patch_size = patch_size
         self.input_resolution = input_resolution
         self.input_dim = input_dim
+        self.grid_size = input_resolution // patch_size
         # self.conv1 = nn.Conv2d(in_channels=3, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size, bias=False)
         self.de_proj = nn.Linear(hidden_dim, input_dim * patch_size * patch_size)
 
@@ -54,8 +60,15 @@ class Decoder(nn.Module):
         self.transformer = Transformer(hidden_dim, layers, heads)
 
     def forward(self, x: torch.Tensor):
-        assert x.dim() == 3, "Input to decoder should be of shape [B, L, D]"
-        assert x.shape[1] == (self.input_resolution // self.patch_size) ** 2 + 1, f"Input to decoder should have {self.input_resolution // self.patch_size ** 2 + 1} tokens, but got {x.shape[1]}"
+        if x.dim() != 3:
+            raise ValueError(
+                f"Decoder expects [B, L, D], got shape {tuple(x.shape)}"
+            )
+        expected_tokens = self.grid_size ** 2 + 1
+        if x.shape[1] != expected_tokens:
+            raise ValueError(
+                f"Decoder expects {expected_tokens} tokens, got {x.shape[1]}"
+            )
 
         x = x[:, 1:, :]  # remove the cls token
         x = self.ln_pre(x)
@@ -63,8 +76,17 @@ class Decoder(nn.Module):
         x = self.transformer(x)
         x = x.permute(1, 0, 2)  # LBD -> BLD
 
-        x = self.de_proj(x)  # shape = [B, L, input_dim * patch_size * patch_size]
-        x = x.reshape(x.shape[0], self.input_dim, self.input_resolution, self.input_resolution)  # shape = [B, input_dim, input_resolution, input_resolution]
+        patches = self.de_proj(x)
+        # F.fold is the inverse of the encoder's row-major non-overlapping patch
+        # layout. A direct [B, L, C*p*p] -> [B, C, H, W] reshape would spread
+        # each local patch across image-wide stripes.
+        patches = patches.transpose(1, 2).contiguous()
+        x = F.fold(
+            patches,
+            output_size=(self.input_resolution, self.input_resolution),
+            kernel_size=self.patch_size,
+            stride=self.patch_size,
+        )
 
         return x
 
@@ -140,4 +162,3 @@ if __name__ == "__main__":
     print(contra.shape)
     rec = ae_vit.decode(z)
     print(rec.shape)
-        

@@ -1,0 +1,95 @@
+model:
+  target: solarchip.SolarCHIP.solarchip_base
+  params:
+    save_memory: true
+    ckpt_path: null
+    base_model:
+      target: solarchip.modules.ViT.AE_ViT
+      params:
+        contrastive_dim: 768
+        ckpt_path: null
+
+        ddconfig:
+          input_dim: 1
+          input_resolution: 1024
+          patch_size: 64 # 16 x 16 spatial tokens. Patch size 32 would make the existing inter-patch contrastive matrix and self-attention much more costly.
+          hidden_dim: 768
+          layers: 12
+          heads: 12
+
+    loss_config:
+      epochs: 200
+      lr: 1.0e-4
+      optimizer: AdamW
+      scheduler: CosineAnnealingLR
+      rec_loss_type: l2
+      kl_weight: 0.0
+      perceptual_weight: 0.0
+      cls_contrastive_weight: 0.05
+      pat_contrastive_weight: 0.001
+      int_contrastive_weight: 0.0001
+
+data:
+  target: data.build.DataModuleFromConfig
+  params:
+    batch_size: 16
+    num_workers: 8
+    wrap: False
+    train:
+      target: data.dataset.SolarDataset.multimodal_dataset
+      params:
+        enhance_type: ['log1p','zscore']
+        load_imgs: False
+        torch_augment_type:
+          - 1024
+          - 0.5
+          - 360
+        time_interval: 
+          - 0
+          - 5000
+        time_step: 1
+    validation:
+      target: data.dataset.SolarDataset.multimodal_dataset
+      params:
+        enhance_type: ['log1p', 'zscore']
+        load_imgs: False
+        torch_augment_type:
+          - 1024
+          - 0.5
+          - 360
+        time_interval: 
+          - 5000
+          - 6000
+        time_step: 1
+
+
+lightning:
+  callbacks:
+    image_logger:
+      target: solarchip.utils.callback.SolarImageLogger
+      params:
+        log_on_batch_idx: False
+        # 第 N、2N、3N... 个 train epoch 各绘制一次 train/validation 图像。
+        every_n_train_epochs: 10
+        max_images: 2
+    
+    early_stop:
+      params:
+        monitor: val_loss
+        patience: 100
+        mode: min
+
+  modelcheckpoint:
+    params:
+      monitor: val_loss
+      filename: '{epoch:06}_{val_loss:.4f}'
+      save_top_k: 3
+      every_n_epochs: 1
+      save_weights_only: False
+
+  trainer:
+    max_epochs: 200
+    precision: bf16-mixed
+    log_every_n_steps: 1
+    strategy: ddp_find_unused_parameters_true
+    # devices: [0]
