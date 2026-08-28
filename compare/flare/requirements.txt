@@ -1,0 +1,5 @@
+# Dependencies added for the fixed DeepSWM implementation snapshot.
+# They were resolved against torch==2.6.0 / torchvision==0.21.0 without
+# requesting a torch or torchvision downgrade.
+s5-pytorch==0.2.1
+timm==1.0.15
