@@ -1,0 +1,112 @@
+model:
+  target: downstream.flare.SolarPredictor.SolarPredictor
+  params:
+    # Exact architecture recorded by the ViT SolarCHIP pretraining run.
+    base_model:
+      target: solarchip.modules.ViT.AE_ViT
+      params:
+        contrastive_dim: 768
+        ckpt_path: null
+        ddconfig:
+          input_dim: 1
+          input_resolution: 1024
+          patch_size: 64
+          hidden_dim: 768
+          layers: 12
+          heads: 12
+
+    # The full last.ckpt is not readable by the current user, so use the run's
+    # readable exported state dict. The loader strips its uniform outer
+    # "module." prefix before selecting model_dict.hmi.
+    pretrained_ckpt_path: checkpoints/solarchip/VIT_AE_base_zscore/2026-08-26T16-00-18/checkpoints/last.ckpt
+    pretrained_prefix: model_dict.hmi
+    allow_shared_all: false
+
+    class_groups: ['0AB', 'C', 'M', 'X']
+    representation_dim: 256
+    head_hidden_dim: 256
+    dropout: 0.2
+    attention_heads: 8
+    use_contrastive_residual: true
+    contrastive_gate_init: 0.1
+
+    class_weights: null
+    loss_type: focal
+    focal_gamma: 2.0
+    metric_class_ids: [0, 1, 2, 3]
+
+    learning_rate: 1.0e-4
+    encoder_learning_rate: 1.0e-5
+    weight_decay: 1.0e-4
+    # false: permanently freeze the pretrained branch and train only the new
+    # downstream mapper/adapter/classifier; true: fine-tune it after the warmup.
+    train_backbone: false
+    freeze_encoder_epochs: 20
+    scheduler: cosine
+    max_epochs: 200
+    min_learning_rate: 0.0
+
+data:
+  target: data.build.DataModuleFromConfig
+  params:
+    batch_size: 32
+    num_workers: 8
+    wrap: false
+    shuffle_val_dataloader: false
+    # Keep custom_collate_fn unset: the project custom collate drops labels.
+    train:
+      target: downstream.flare.data.dataset.FlareDataset
+      params:
+        modal_list: ['hmi']
+        enhance_type: ['log1p', 'zscore']
+        load_imgs: false
+        torch_augment_type: [1024, 0.0, 0]
+        time_interval: [0, 5000]
+        time_step: 1
+        label_path: downstream/flare/data/flare_daily_labels.csv
+        expected_event_time_column: start_time
+        class_groups: ['0AB', 'C', 'M', 'X']
+    validation:
+      target: downstream.flare.data.dataset.FlareDataset
+      params:
+        modal_list: ['hmi']
+        enhance_type: ['log1p', 'zscore']
+        load_imgs: false
+        torch_augment_type: [1024, 0.0, 0]
+        time_interval: [5000, 6000]
+        time_step: 1
+        label_path: downstream/flare/data/flare_daily_labels.csv
+        expected_event_time_column: start_time
+        class_groups: ['0AB', 'C', 'M', 'X']
+
+lightning:
+  callbacks:
+    image_logger:
+      params:
+        disabled: true
+    early_stop:
+      target: pytorch_lightning.callbacks.EarlyStopping
+      params:
+        monitor: val_macro_f1
+        mode: max
+        patience: 50
+        check_finite: true
+
+  modelcheckpoint:
+    params:
+      monitor: val_macro_f1
+      mode: max
+      filename: '{epoch:06}-{val_macro_f1:.4f}'
+      save_top_k: 1
+      save_last: true
+      every_n_epochs: 1
+      save_weights_only: false
+
+  trainer:
+    max_epochs: 200
+    precision: 32-true
+    deterministic: true
+    benchmark: false
+    log_every_n_steps: 1
+    num_sanity_val_steps: 2
+    check_val_every_n_epoch: 1

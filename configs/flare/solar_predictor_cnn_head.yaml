@@ -20,9 +20,7 @@ model:
           use_linear_attn: false
           dropout: 0.0
 
-    # Epoch 187 is the run's recorded best validation checkpoint; last.ckpt is
-    # from the same epoch, but this path makes the selection criterion explicit.
-    pretrained_ckpt_path: logs/solarchip_CNN_AE_base_zscore_2026-07-10T18-03-45/checkpoints/epoch=000187_val_loss=1.0262.ckpt
+    pretrained_ckpt_path: checkpoints/solarchip/CNN_AE_base_zscore/checkpoints/last.ckpt
     pretrained_prefix: model_dict.hmi
     allow_shared_all: false
 
@@ -44,8 +42,8 @@ model:
     weight_decay: 1.0e-4
     # false: permanently freeze the pretrained branch and train only the new
     # downstream mapper/adapter/classifier; true: fine-tune it after the warmup.
-    train_backbone: true
-    freeze_encoder_epochs: 5
+    train_backbone: false
+    freeze_encoder_epochs: 20
     scheduler: cosine
     max_epochs: 200
     min_learning_rate: 0.0
@@ -53,7 +51,7 @@ model:
 data:
   target: data.build.DataModuleFromConfig
   params:
-    batch_size: 16
+    batch_size: 32
     num_workers: 8
     wrap: false
     shuffle_val_dataloader: false
@@ -93,7 +91,7 @@ lightning:
       params:
         monitor: val_macro_f1
         mode: max
-        patience: 30
+        patience: 50
         check_finite: true
 
   modelcheckpoint:
@@ -107,11 +105,10 @@ lightning:
       save_weights_only: false
 
   trainer:
-    devices: [0]
     max_epochs: 200
-    precision: bf16-mixed
+    precision: 32-true
     deterministic: true
     benchmark: false
-    log_every_n_steps: 10
+    log_every_n_steps: 1
     num_sanity_val_steps: 2
     check_val_every_n_epoch: 1
