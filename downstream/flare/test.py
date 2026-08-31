@@ -49,11 +49,15 @@ if not (Path.cwd() / "data").is_dir():
 
 from data.build import WrappedDataset, instantiate_from_config
 from downstream.flare.data.class_groups import (
-    BASE_CLASS_SYMBOLS,
     DEFAULT_CLASS_GROUPS,
     normalize_class_groups,
 )
 from downstream.flare.data.dataset import DATASET_EPOCH
+from downstream.flare.data.metrics import (
+    binary_metric_values,
+    class_reduction_mappings,
+    collapse_confusion,
+)
 
 
 BINARY_METRICS = ("pod", "csi", "far", "hss", "tss", "acc")
@@ -594,84 +598,8 @@ def collect_grouped_confusion(
     return confusion, batch_count
 
 
-def _group_mapping(
-    class_groups: Sequence[str], raw_bucket: Mapping[str, int], description: str
-) -> tuple[int, ...]:
-    mapping: list[int] = []
-    for group in class_groups:
-        buckets = {raw_bucket[symbol] for symbol in group}
-        if len(buckets) != 1:
-            raise ValueError(
-                f"class group {group!r} crosses the {description} boundary; "
-                "the requested metric cannot be recovered from grouped predictions"
-            )
-        mapping.append(next(iter(buckets)))
-    return tuple(mapping)
-
-
-def class_reduction_mappings(
-    class_groups: Sequence[str],
-) -> dict[str, tuple[int, ...]]:
-    groups = normalize_class_groups(class_groups)
-    ranks = {symbol: index for index, symbol in enumerate(BASE_CLASS_SYMBOLS)}
-    return {
-        "overall": _group_mapping(
-            groups,
-            {
-                symbol: 0 if rank < ranks["C"] else 1 if rank < ranks["M"] else 2
-                for symbol, rank in ranks.items()
-            },
-            "0/C/M three-class",
-        ),
-        "c_plus": _group_mapping(
-            groups,
-            {symbol: int(rank >= ranks["C"]) for symbol, rank in ranks.items()},
-            "C+",
-        ),
-        "m_plus": _group_mapping(
-            groups,
-            {symbol: int(rank >= ranks["M"]) for symbol, rank in ranks.items()},
-            "M+",
-        ),
-    }
-
-
-def collapse_confusion(
-    confusion: torch.Tensor, mapping: Sequence[int], output_classes: int
-) -> torch.Tensor:
-    if confusion.ndim != 2 or confusion.shape[0] != confusion.shape[1]:
-        raise ValueError("confusion must be a square matrix")
-    if len(mapping) != confusion.shape[0]:
-        raise ValueError("mapping length must match confusion size")
-    collapsed = torch.zeros(output_classes, output_classes, dtype=torch.float64)
-    source = confusion.to(torch.float64)
-    for true_class, mapped_true in enumerate(mapping):
-        for predicted_class, mapped_prediction in enumerate(mapping):
-            collapsed[mapped_true, mapped_prediction] += source[
-                true_class, predicted_class
-            ]
-    return collapsed
-
-
 def _safe_ratio(numerator: float, denominator: float) -> float:
     return float(numerator / denominator) if denominator > 0 else 0.0
-
-
-def binary_metric_values(confusion: torch.Tensor) -> dict[str, float]:
-    if tuple(confusion.shape) != (2, 2):
-        raise ValueError("binary confusion must have shape [2,2]")
-    tn, fp = (float(value) for value in confusion[0])
-    fn, tp = (float(value) for value in confusion[1])
-    total = tn + fp + fn + tp
-    hss_denominator = (tp + fn) * (fn + tn) + (tp + fp) * (fp + tn)
-    return {
-        "pod": _safe_ratio(tp, tp + fn),
-        "csi": _safe_ratio(tp, tp + fp + fn),
-        "far": _safe_ratio(fp, tp + fp),
-        "hss": _safe_ratio(2.0 * (tp * tn - fp * fn), hss_denominator),
-        "tss": _safe_ratio(tp, tp + fn) - _safe_ratio(fp, fp + tn),
-        "acc": _safe_ratio(tp + tn, total),
-    }
 
 
 def resolve_metric_names(requested: Sequence[str]) -> tuple[str, ...]:

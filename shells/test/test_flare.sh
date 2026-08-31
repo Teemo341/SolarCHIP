@@ -1,12 +1,32 @@
 #!/usr/bin/env bash
 python -m downstream.flare.test \
-  -r logs/compare_flare/deepswm/2026-08-30T22-48-11/checkpoints/epoch=000029.ckpt \
+  -r logs/compare_flare/deepswm_k4/2026-08-31T16-05-55/checkpoints/last.ckpt \
   --metrics all
 
 python -m downstream.flare.test \
-  -r logs/compare_flare/pcnn/2026-08-30T22-50-28/checkpoints/epoch=000013.ckpt \
+  -r logs/compare_flare/deepswm_k4/2026-08-31T16-05-55/checkpoints/last.ckpt \
   --metrics all
 
 python -m downstream.flare.test \
-  -r logs/compare_flare/yi2023_dqn/2026-08-30T22-52-11/checkpoints/epoch=000044.ckpt \
+  -r logs/compare_flare/deepswm_k7/2026-08-31T16-05-59/checkpoints/last.ckpt \
+  --metrics all
+
+python -m downstream.flare.test \
+  -r logs/compare_flare/deepswm_k7/2026-08-31T16-05-59/checkpoints/last.ckpt \
+  --metrics all
+
+python -m downstream.flare.test \
+  -r logs/compare_flare/deepswm_k14/2026-08-31T16-06-06/checkpoints/last.ckpt \
+  --metrics all
+
+python -m downstream.flare.test \
+  -r logs/compare_flare/deepswm_k14/2026-08-31T16-06-06/checkpoints/last.ckpt \
+  --metrics all
+
+python -m downstream.flare.test \
+  -r logs/compare_flare/deepswm_k28/2026-08-31T16-06-13/checkpoints/last.ckpt \
+  --metrics all
+
+python -m downstream.flare.test \
+  -r logs/compare_flare/deepswm_k28/2026-08-31T16-06-13/checkpoints/last.ckpt \
   --metrics all

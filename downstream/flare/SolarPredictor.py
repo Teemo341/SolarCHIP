@@ -31,6 +31,14 @@ from downstream.flare.data.class_groups import (
     build_raw_label_to_group,
     normalize_class_groups,
 )
+from downstream.flare.data.metrics import (
+    binary_true_skill_statistic,
+    collapse_confusion,
+    threshold_reduction_mapping,
+)
+
+
+SELECTION_SCORE_KEYS = ("accuracy", "c_plus_tss", "m_plus_tss")
 
 
 class PretrainedCheckpointError(RuntimeError):
@@ -55,6 +63,36 @@ def _normalize_loss_type(loss_type: str) -> str:
             f"loss_type must be 'cross_entropy' or 'focal', got {loss_type!r}"
         )
     return aliases[normalized]
+
+
+def _normalize_selection_score_weights(
+    weights: Mapping[str, float] | None,
+) -> dict[str, float] | None:
+    """Validate and normalize relative weights for checkpoint selection."""
+
+    if weights is None:
+        return None
+    if not isinstance(weights, Mapping):
+        raise TypeError(
+            "selection_score_weights must be a mapping with keys "
+            f"{list(SELECTION_SCORE_KEYS)}, or null"
+        )
+    missing = sorted(set(SELECTION_SCORE_KEYS).difference(weights))
+    unknown = sorted(set(weights).difference(SELECTION_SCORE_KEYS))
+    if missing or unknown:
+        raise ValueError(
+            "selection_score_weights must contain exactly "
+            f"{list(SELECTION_SCORE_KEYS)}; missing={missing}, unknown={unknown}"
+        )
+    normalized = {key: float(weights[key]) for key in SELECTION_SCORE_KEYS}
+    if any(not math.isfinite(value) for value in normalized.values()):
+        raise ValueError("selection_score_weights values must be finite")
+    if any(value < 0 for value in normalized.values()):
+        raise ValueError("selection_score_weights values must be non-negative")
+    total = sum(normalized.values())
+    if total <= 0:
+        raise ValueError("selection_score_weights must contain a positive value")
+    return {key: value / total for key, value in normalized.items()}
 
 
 def _plain_config(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -238,6 +276,7 @@ class SolarPredictor(pl.LightningModule):
         loss_type: str = "cross_entropy",
         focal_gamma: float = 2.0,
         metric_class_ids: Sequence[int] | None = None,
+        selection_score_weights: Mapping[str, float] | None = None,
         train_backbone: bool = True,
         freeze_encoder_epochs: int = 0,
         scheduler: str = "cosine",
@@ -248,6 +287,27 @@ class SolarPredictor(pl.LightningModule):
 
         resolved_class_groups = normalize_class_groups(class_groups)
         num_classes = len(resolved_class_groups)
+        resolved_selection_weights = _normalize_selection_score_weights(
+            selection_score_weights
+        )
+        selection_threshold_mappings: dict[str, tuple[int, ...]] = {}
+        if resolved_selection_weights is not None:
+            for threshold in ("c_plus", "m_plus"):
+                metric_name = f"{threshold}_tss"
+                if resolved_selection_weights[metric_name] <= 0:
+                    continue
+                try:
+                    selection_threshold_mappings[threshold] = (
+                        threshold_reduction_mapping(
+                            resolved_class_groups,
+                            threshold,
+                        )
+                    )
+                except ValueError as error:
+                    raise ValueError(
+                        f"selection_score_weights[{metric_name!r}] is non-zero, "
+                        f"but class_groups cannot produce that metric: {error}"
+                    ) from error
         if representation_dim <= 0 or head_hidden_dim <= 0:
             raise ValueError("representation_dim and head_hidden_dim must be positive")
         if not 0.0 <= dropout < 1.0:
@@ -333,6 +393,8 @@ class SolarPredictor(pl.LightningModule):
 
         self.class_groups = resolved_class_groups
         self.num_classes = num_classes
+        self.selection_score_weights = resolved_selection_weights
+        self.selection_threshold_mappings = selection_threshold_mappings
         raw_label_to_group = build_raw_label_to_group(self.class_groups)
         self.register_buffer(
             "raw_label_to_group",
@@ -492,6 +554,9 @@ class SolarPredictor(pl.LightningModule):
                 "loss_type": self.loss_type,
                 "focal_gamma": self.focal_gamma,
                 "metric_class_ids": resolved_metric_ids,
+                "selection_score_weights": None
+                if self.selection_score_weights is None
+                else dict(self.selection_score_weights),
                 "train_backbone": self.train_backbone,
                 "freeze_encoder_epochs": freeze_encoder_epochs,
                 "scheduler": scheduler,
@@ -531,6 +596,12 @@ class SolarPredictor(pl.LightningModule):
         checkpoint["flare_optimization_config"] = {
             "train_backbone": self.train_backbone,
         }
+        checkpoint["flare_metric_config"] = {
+            "version": 1,
+            "selection_score_weights": None
+            if self.selection_score_weights is None
+            else dict(self.selection_score_weights),
+        }
 
     def on_load_checkpoint(self, checkpoint: Mapping[str, Any]) -> None:
         saved_groups = checkpoint.get("flare_class_groups")
@@ -560,6 +631,64 @@ class SolarPredictor(pl.LightningModule):
             raise PretrainedCheckpointError(
                 "A self-contained SolarPredictor restore requires a Lightning "
                 "checkpoint with a 'state_dict' mapping"
+            )
+
+        saved_metric_config = checkpoint.get("flare_metric_config")
+        if saved_metric_config is None:
+            hyperparameters = checkpoint.get("hyper_parameters")
+            if not isinstance(hyperparameters, Mapping):
+                hyperparameters = {}
+            has_saved_selection_weights = "selection_score_weights" in hyperparameters
+            saved_selection_weights = hyperparameters.get(
+                "selection_score_weights"
+            )
+        elif isinstance(saved_metric_config, Mapping):
+            if saved_metric_config.get("version") != 1:
+                raise PretrainedCheckpointError(
+                    "Downstream checkpoint has an unsupported flare metric version"
+                )
+            if "selection_score_weights" not in saved_metric_config:
+                raise PretrainedCheckpointError(
+                    "Downstream checkpoint flare_metric_config is missing "
+                    "selection_score_weights"
+                )
+            has_saved_selection_weights = True
+            saved_selection_weights = saved_metric_config.get(
+                "selection_score_weights"
+            )
+        else:
+            raise PretrainedCheckpointError(
+                "Downstream checkpoint contains invalid flare_metric_config metadata"
+            )
+        try:
+            normalized_saved_selection_weights = (
+                _normalize_selection_score_weights(saved_selection_weights)
+            )
+        except (TypeError, ValueError) as error:
+            raise PretrainedCheckpointError(
+                "Downstream checkpoint contains invalid selection_score_weights: "
+                f"{error}"
+            ) from error
+        selection_weights_match = (
+            normalized_saved_selection_weights is None
+            and self.selection_score_weights is None
+        ) or (
+            normalized_saved_selection_weights is not None
+            and self.selection_score_weights is not None
+            and all(
+                math.isclose(
+                    normalized_saved_selection_weights[key],
+                    self.selection_score_weights[key],
+                    rel_tol=0.0,
+                    abs_tol=1e-12,
+                )
+                for key in SELECTION_SCORE_KEYS
+            )
+        )
+        if has_saved_selection_weights and not selection_weights_match:
+            raise PretrainedCheckpointError(
+                "Downstream checkpoint selection_score_weights do not match the "
+                "current model"
             )
 
         saved_optimization_config = checkpoint.get("flare_optimization_config")
@@ -681,6 +810,14 @@ class SolarPredictor(pl.LightningModule):
             raise PretrainedCheckpointError(
                 "Downstream checkpoint raw-label grouping does not match the "
                 "current model class_groups"
+            )
+        saved_metric_ids = state.get("metric_class_ids")
+        if not torch.equal(
+            saved_metric_ids.detach().cpu(), self.metric_class_ids.detach().cpu()
+        ):
+            raise PretrainedCheckpointError(
+                "Downstream checkpoint metric_class_ids do not match the current "
+                "model"
             )
         self._restored_from_downstream_checkpoint = True
 
@@ -999,16 +1136,15 @@ class SolarPredictor(pl.LightningModule):
             output["date_id"] = batch["date_id"]
         return output
 
-    def _log_confusion_metrics(
+    def _confusion_metric_values(
         self,
-        confusion_metric: MulticlassConfusionMatrix,
+        confusion: torch.Tensor,
         split: str,
-    ) -> None:
-        confusion = confusion_metric.compute().to(torch.float32)
+    ) -> dict[str, torch.Tensor]:
+        confusion = confusion.to(torch.float32)
         total = confusion.sum()
         if total <= 0:
-            confusion_metric.reset()
-            return
+            return {}
 
         true_positive = confusion.diag()
         support = confusion.sum(dim=1)
@@ -1018,8 +1154,9 @@ class SolarPredictor(pl.LightningModule):
         f1 = 2.0 * precision * recall / (precision + recall).clamp_min(1e-12)
         active_ids = self.metric_class_ids
 
-        metrics = {
-            f"{split}_accuracy": true_positive.sum() / total,
+        accuracy = true_positive.sum() / total
+        metrics: dict[str, torch.Tensor] = {
+            f"{split}_accuracy": accuracy,
             f"{split}_balanced_accuracy": recall[active_ids].mean(),
             f"{split}_macro_f1": f1[active_ids].mean(),
         }
@@ -1032,7 +1169,36 @@ class SolarPredictor(pl.LightningModule):
                 predicted[~active_mask].sum() / total
             )
 
-        self.log_dict(metrics, on_step=False, on_epoch=True, sync_dist=False)
+        threshold_tss: dict[str, torch.Tensor] = {}
+        for threshold, mapping in self.selection_threshold_mappings.items():
+            binary_confusion = collapse_confusion(confusion, mapping, 2)
+            tss, valid = binary_true_skill_statistic(binary_confusion)
+            threshold_tss[threshold] = tss
+            metrics[f"{split}_{threshold}_tss"] = tss
+            metrics[f"{split}_{threshold}_tss_valid"] = valid
+
+        if self.selection_score_weights is not None:
+            selection_score = (
+                accuracy * self.selection_score_weights["accuracy"]
+            )
+            for threshold in ("c_plus", "m_plus"):
+                weight = self.selection_score_weights[f"{threshold}_tss"]
+                if weight > 0:
+                    selection_score = (
+                        selection_score + threshold_tss[threshold] * weight
+                    )
+            metrics[f"{split}_selection_score"] = selection_score
+        return metrics
+
+    def _log_confusion_metrics(
+        self,
+        confusion_metric: MulticlassConfusionMatrix,
+        split: str,
+    ) -> None:
+        confusion = confusion_metric.compute()
+        metrics = self._confusion_metric_values(confusion, split)
+        if metrics:
+            self.log_dict(metrics, on_step=False, on_epoch=True, sync_dist=False)
         confusion_metric.reset()
 
     def on_train_epoch_end(self) -> None:
