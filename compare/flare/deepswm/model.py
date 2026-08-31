@@ -10,6 +10,7 @@ removing masking and the decoder.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 
 import torch
 from torch import nn
@@ -61,6 +62,73 @@ def build_2d_sincos_position_embedding(
     if include_cls_token:
         embedding = torch.cat((torch.zeros(1, embed_dim), embedding), dim=0)
     return embedding.unsqueeze(0)
+
+
+class _DeterministicReplicationConv3d(nn.Conv3d):
+    """Conv3d with replicate padding implemented via deterministic indexing."""
+
+    def __init__(
+        self,
+        *args,
+        padding: int | Sequence[int] = 0,
+        **kwargs,
+    ) -> None:
+        if isinstance(padding, int):
+            replicate_padding = (padding,) * 3
+        else:
+            replicate_padding = tuple(int(value) for value in padding)
+        if len(replicate_padding) != 3 or any(
+            value < 0 for value in replicate_padding
+        ):
+            raise ValueError(
+                "3-D replicate padding must contain three non-negative values"
+            )
+        super().__init__(*args, padding=0, **kwargs)
+        self.replicate_padding = replicate_padding
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        for dimension, amount in zip((-3, -2, -1), self.replicate_padding):
+            if amount == 0:
+                continue
+            indices = torch.arange(
+                -amount,
+                features.shape[dimension] + amount,
+                device=features.device,
+            ).clamp_(0, features.shape[dimension] - 1)
+            features = features.index_select(dimension, indices)
+        return super().forward(features)
+
+
+class _SpatialMeanPool3d(nn.Module):
+    """Keep depth and average H/W without AdaptiveAvgPool3d's CUDA backward."""
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        return features.mean(dim=(-2, -1), keepdim=True)
+
+
+class _DeterministicAdaptiveAvgPool1d(nn.Module):
+    """Adaptive average pooling without CUDA's nondeterministic 2-D backward."""
+
+    def __init__(self, output_size: int) -> None:
+        super().__init__()
+        if output_size < 1:
+            raise ValueError("output_size must be positive")
+        self.output_size = int(output_size)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        input_size = features.shape[-1]
+        if input_size == 1:
+            return features.repeat_interleave(self.output_size, dim=-1)
+        if input_size == self.output_size:
+            return features
+        pooled = []
+        for index in range(self.output_size):
+            start = index * input_size // self.output_size
+            end = (
+                (index + 1) * input_size + self.output_size - 1
+            ) // self.output_size
+            pooled.append(features[..., start:end].mean(dim=-1))
+        return torch.stack(pooled, dim=-1)
 
 
 class SparseMAEEncoder(nn.Module):
@@ -172,32 +240,30 @@ class DepthwiseChannelSelectiveModule(nn.Module):
     def __init__(self, dim: int, dropout_rate: float) -> None:
         super().__init__()
         self.conv3d = nn.Sequential(
-            nn.Conv3d(
+            _DeterministicReplicationConv3d(
                 dim,
                 dim,
                 kernel_size=3,
                 padding=1,
                 groups=dim,
-                padding_mode="replicate",
             ),
             nn.InstanceNorm3d(dim),
             nn.ReLU(),
             nn.Dropout(dropout_rate),
         )
         self.conv2d = nn.Sequential(
-            nn.Conv3d(
+            _DeterministicReplicationConv3d(
                 dim,
                 dim,
                 kernel_size=(1, 3, 3),
                 padding=(0, 1, 1),
                 groups=dim,
-                padding_mode="replicate",
             ),
             nn.InstanceNorm3d(dim),
             nn.ReLU(),
         )
         self.image_attention = nn.Sequential(
-            nn.AdaptiveAvgPool3d((None, 1, 1)),
+            _SpatialMeanPool3d(),
             nn.Conv3d(dim, dim, kernel_size=1),
             nn.ReLU(),
             nn.Conv3d(dim, dim, kernel_size=1),
@@ -315,7 +381,11 @@ class SolarSpatialEncoder(nn.Module):
             features.shape[0], self.dim * self.num_modalities, *features.shape[-2:]
         )
         features = self.output_projection(features)
-        features = torch.nn.functional.adaptive_avg_pool2d(features, (8, 8))
+        if features.shape[-2:] != (8, 8):
+            raise RuntimeError(
+                "DeepSWM's fixed 256-pixel input and three SSE levels must "
+                f"produce an 8x8 grid, got {tuple(features.shape[-2:])}"
+            )
         if self.dim != 64:
             raise RuntimeError(
                 "DeepSWM's [L,D] reshape requires dim=64 with an 8x8 grid"
@@ -342,7 +412,7 @@ class LongRangeTemporalSSM(nn.Module):
             nn.ReLU(),
         )
         self.dropout = nn.Dropout(dropout_rate)
-        self.output_pool = nn.AdaptiveAvgPool1d(output_dim)
+        self.output_pool = _DeterministicAdaptiveAvgPool1d(output_dim)
 
     def forward(self, history: torch.Tensor) -> torch.Tensor:
         history = self.ssm_block(history)

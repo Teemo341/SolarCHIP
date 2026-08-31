@@ -54,7 +54,15 @@ def gerrity_score_matrix(class_probabilities: torch.Tensor) -> torch.Tensor:
             "GMGS requires non-zero finite training probability for every class"
         )
     probabilities = probabilities / probabilities.sum()
-    cumulative = probabilities.cumsum(dim=0)[:-1]
+    # CUDA cumsum has no deterministic implementation.  There are only four
+    # ordered classes, so form the three prefix sums explicitly and keep the
+    # trainer's global deterministic-algorithm guarantee intact.
+    cumulative_values = []
+    running_probability = probabilities.new_zeros(())
+    for probability in probabilities[:-1]:
+        running_probability = running_probability + probability
+        cumulative_values.append(running_probability)
+    cumulative = torch.stack(cumulative_values)
     odds = (1.0 - cumulative) / cumulative
 
     score = torch.empty(

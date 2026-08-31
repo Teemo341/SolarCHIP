@@ -113,6 +113,42 @@ class FlareDatasetGroupingTests(unittest.TestCase):
         self.assertEqual(dataset.raw_class_counts, {index: 1 for index in range(6)})
         self.assertEqual(dataset.class_counts, {0: 3, 1: 1, 2: 1, 3: 1})
 
+    def test_dates_without_flare_labels_are_filtered(self) -> None:
+        incomplete_label_path = Path(self.temporary_directory.name) / "incomplete.csv"
+        incomplete_label_path.write_text(
+            "date,date_id,label\n"
+            "2010-05-01,0,0\n"
+            "2010-05-02,1,1\n"
+            "2010-05-04,3,3\n"
+            "2010-05-05,4,4\n",
+            encoding="utf-8",
+        )
+        with (
+            patch.object(multimodal_dataset, "__init__", self._fake_parent_init),
+            patch.object(
+                multimodal_dataset,
+                "__getitem__",
+                self._fake_parent_getitem,
+            ),
+        ):
+            dataset = FlareDataset(
+                modal_list=["hmi"],
+                label_path=incomplete_label_path,
+                verify_label_summary=False,
+            )
+            labels = next(iter(DataLoader(dataset, batch_size=4)))["label"]
+
+        self.assertEqual(list(dataset.exist_idx), [0, 1, 3, 4])
+        self.assertEqual(dataset.num_selected_before_label_filter, 6)
+        self.assertEqual(dataset.missing_label_date_ids, (2, 5))
+        self.assertEqual(dataset.num_dropped_for_missing_labels, 2)
+        self.assertEqual(labels.tolist(), [0, 0, 1, 2])
+        self.assertEqual(
+            dataset.raw_class_counts,
+            {0: 1, 1: 1, 2: 0, 3: 1, 4: 1, 5: 0},
+        )
+        self.assertEqual(dataset.class_counts, {0: 2, 1: 1, 2: 1, 3: 0})
+
 
 if __name__ == "__main__":
     unittest.main()

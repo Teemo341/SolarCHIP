@@ -10,6 +10,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Sequence
 
+import numpy as np
 import torch
 
 from data.dataset.SolarDataset import multimodal_dataset
@@ -209,16 +210,35 @@ class FlareDataset(multimodal_dataset):
         self.return_date_id = return_date_id
 
         selected_date_ids = [int(value) for value in self.exist_idx]
+        self.num_selected_before_label_filter = len(selected_date_ids)
         missing_date_ids = [
             date_id
             for date_id in selected_date_ids
             if date_id not in self.labels_by_date_id
         ]
+        self.missing_label_date_ids = tuple(missing_date_ids)
+        self.num_dropped_for_missing_labels = len(missing_date_ids)
         if missing_date_ids:
             preview = ", ".join(str(value) for value in missing_date_ids[:10])
+            print(
+                f"Dropped {len(missing_date_ids)} selected SolarCHIP dates "
+                f"without flare labels; first date IDs: {preview}"
+            )
+            selected_date_ids = [
+                date_id
+                for date_id in selected_date_ids
+                if date_id in self.labels_by_date_id
+            ]
+            if isinstance(self.exist_idx, np.ndarray):
+                self.exist_idx = np.asarray(
+                    selected_date_ids, dtype=self.exist_idx.dtype
+                )
+            else:
+                self.exist_idx = selected_date_ids
+        if not selected_date_ids:
             raise ValueError(
-                f"Label table {self.label_path} does not cover "
-                f"{len(missing_date_ids)} selected SolarCHIP date IDs; first: {preview}"
+                "No selected SolarCHIP dates have flare labels after filtering "
+                f"with {self.label_path}"
             )
 
         raw_counts = Counter(

@@ -1,7 +1,7 @@
 model:
   target: compare.flare.deepswm.module.DeepSWM
   params:
-    window_length: 1
+    window_length: 4
     image_size: 256
     learning_rate: 4.0e-5
     weight_decay: 0.05
@@ -29,9 +29,9 @@ model:
 data:
   target: data.build.DataModuleFromConfig
   params:
-    # Micro-batch 8 with four-step accumulation preserves the paper's
-    # effective batch size 32 without assuming an H200-sized GPU.
-    batch_size: 8
+    # Two four-day windows per micro-batch keep eight encoded HMI frames
+    # resident at once; accumulation preserves effective batch size 32.
+    batch_size: 2
     num_workers: 8
     wrap: false
     shuffle_val_dataloader: false
@@ -39,7 +39,7 @@ data:
       target: compare.flare.deepswm.dataset.DeepSWMSequenceDataset
       params:
         modal_list: [hmi]
-        window_length: 1
+        window_length: 4
         enhance_type: [log1p, zscore]
         load_imgs: false
         torch_augment_type: [1024, 0.0, 0]
@@ -52,7 +52,7 @@ data:
       target: compare.flare.deepswm.dataset.DeepSWMSequenceDataset
       params:
         modal_list: [hmi]
-        window_length: 1
+        window_length: 4
         enhance_type: [log1p, zscore]
         load_imgs: false
         torch_augment_type: [1024, 0.0, 0]
@@ -79,7 +79,7 @@ lightning:
     devices: [0]
     max_epochs: 35
     precision: 32-true
-    accumulate_grad_batches: 4
+    accumulate_grad_batches: 16
     deterministic: true
     benchmark: false
     log_every_n_steps: 10

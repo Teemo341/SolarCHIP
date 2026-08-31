@@ -174,6 +174,41 @@ class_weights: null       # 可选：每个分组类别一个严格正权重
 
 前 5 epoch 冻结预训练分支时，参数仍从开始就保留在 optimizer 中，forward 用 `no_grad` 跳过其梯度；这避免在后续解冻时改变 optimizer 参数组。若改为多 GPU，必须显式使用 `strategy: ddp_find_unused_parameters_true`。
 
+## 统一测试入口
+
+`downstream/flare/test.py` 使用训练目录中保存的 project YAML 重建模型与数据预处理，并严格加载完整 checkpoint。它同时支持 SolarPredictor、DeepSWM、P-CNN 和 Yi2023 DQN；统一指标都从各模型最终解码的类别预测计算，不直接混用三种对比模型含义不同的 logits/Q 值。
+
+传入运行目录时默认使用 `checkpoints/last.ckpt`：
+
+```bash
+python -m downstream.flare.test \
+  -r logs/compare_flare/deepswm/2026-08-30T22-48-11
+```
+
+也可以直接指定某个权重；需要测试验证指标最佳的 epoch 时应使用这种形式，因为 `last.ckpt` 表示最后一轮而不是最佳一轮：
+
+```bash
+python -m downstream.flare.test \
+  -r logs/compare_flare/deepswm/2026-08-30T22-48-11/checkpoints/epoch=000029.ckpt
+```
+
+`--metrics` 支持 `overall_acc`，以及 `pod/csi/far/hss/tss/acc`。只写二分类指标简称会同时计算 C+ 和 M+；也可以用 `c_plus_tss`、`m_plus_far` 等完整名称只选择一个阈值：
+
+```bash
+python -m downstream.flare.test \
+  -r <run-or-checkpoint> \
+  --metrics overall_acc pod csi far hss tss acc
+```
+
+- `overall_acc`：把最终预测折叠成 `0AB / C / MX` 三分类后的 accuracy。
+- C+：把 `C/M/X` 作为 positive，分别计算 POD、CSI、FAR、HSS、TSS 和 binary ACC。
+- M+：把 `M/X` 作为 positive，计算相同指标。
+- 二分类 confusion matrix 固定为 `[[TN, FP], [FN, TP]]`；所有零分母按仓库既有约定返回 `0.0`。
+
+结果会打印到终端，并默认保存为 `logs/test_results/<model>_<run>_<checkpoint>_<split>_metrics.json`。文件名包含模型目录和训练时间戳，多个模型的 `last.ckpt` 不会互相覆盖。可用 `--output` 改路径，或用 `--no_save` 只打印。默认复用保存配置的 `validation` split；`--split`、`--time_interval`、`--time_step`、`--batch_size` 和 `--num_workers` 均可覆盖。P-CNN 在完整 checkpoint 恢复时会跳过冗余的 ImageNet 权重下载，但正式训练的默认初始化方式没有改变。
+
+SolarDataset 完成模态存在性筛选后，FlareDataset 会继续过滤标签表中不存在的日期，而不是令测试中断。终端和结果 JSON 会同时记录请求的半开 `time_interval` 所对应的开始日期、包含的最后日期和不包含的结束边界，以及标签过滤后数据集实际保留的首尾日期、样本数和缺失标签丢弃数。
+
 ## 验证
 
 ```bash
@@ -188,7 +223,8 @@ python3 -m py_compile \
 # 模型测试需要先激活项目的 solargpt/PyTorch 环境。
 python -m unittest \
   downstream.flare.tests.test_flare_dataset \
-  downstream.flare.tests.test_solar_predictor
+  downstream.flare.tests.test_solar_predictor \
+  downstream.flare.tests.test_flare_test
 ```
 
 已完成真实 NOAA 数据转换、CSV/日期 ID/manifest 全量哈希验证、下载器与转换器单元测试和静态编译。在本机 `solargpt` Conda 环境中还实际实例化了父类和 `FlareDataset`，读取真实 `exist_idx` 与 label sidecar，并用 PyTorch 2.6 验证默认 collate 得到 `LongTensor[B]`、统计函数不再把 label 当模态。由于仓库的 `global_settings.DATA_ROOT` 仍指向训练服务器上的 Linux `/mnt/...` 路径，本机测试用合成 Tensor 代替父类图像读取；真实 PT 图像 I/O 仍需在训练服务器的既有数据环境中跑一个 batch 验收。

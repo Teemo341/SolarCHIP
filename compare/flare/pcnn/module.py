@@ -60,6 +60,7 @@ class PCNN(pl.LightningModule):
         dropout: float = 0.2,
         max_epochs: int = 15,
         pretrained: bool = True,
+        defer_imagenet_weights: bool = False,
         train_class_counts: Mapping[int, int] | Sequence[int] | None = None,
     ) -> None:
         super().__init__()
@@ -71,7 +72,9 @@ class PCNN(pl.LightningModule):
                 "the from-scratch ablation is intentionally disabled."
             )
 
-        self.backbone, feature_dim = self._build_imagenet_backbone()
+        self.backbone, feature_dim = self._build_imagenet_backbone(
+            load_weights=not defer_imagenet_weights
+        )
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.patch_heads = nn.ModuleList(
             _CumulativePatchHead(feature_dim, dropout) for _ in range(self.num_heads)
@@ -119,7 +122,14 @@ class PCNN(pl.LightningModule):
             self.set_train_class_counts(train_class_counts)
 
     @staticmethod
-    def _build_imagenet_backbone() -> tuple[nn.Module, int]:
+    def _build_imagenet_backbone(load_weights: bool = True) -> tuple[nn.Module, int]:
+        """Build the backbone, optionally deferring weights to a full checkpoint.
+
+        ``load_weights=False`` is restore-only: it avoids a redundant network
+        download before ``load_state_dict`` replaces the complete backbone.
+        Training configs retain the default ImageNet initialization.
+        """
+
         try:
             from torchvision.models import (
                 EfficientNet_V2_S_Weights,
@@ -131,10 +141,15 @@ class PCNN(pl.LightningModule):
                 "EfficientNet_V2_S_Weights.IMAGENET1K_V1."
             ) from error
 
-        weights = EfficientNet_V2_S_Weights.IMAGENET1K_V1
+        weights = EfficientNet_V2_S_Weights.IMAGENET1K_V1 if load_weights else None
         try:
             network = efficientnet_v2_s(weights=weights)
         except Exception as error:
+            if not load_weights:
+                raise RuntimeError(
+                    "Could not construct torchvision EfficientNetV2-S for "
+                    "checkpoint restoration."
+                ) from error
             raise RuntimeError(
                 "Could not load the required torchvision EfficientNetV2-S "
                 "IMAGENET1K_V1 weights. P-CNN will not silently use random "
