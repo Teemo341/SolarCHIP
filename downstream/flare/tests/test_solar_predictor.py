@@ -150,6 +150,7 @@ class SolarPredictorTests(unittest.TestCase):
             "attention_heads": 2,
             "use_contrastive_residual": True,
             "scheduler": "none",
+            "train_backbone": True,
             "freeze_encoder_epochs": 0,
         }
         params.update(overrides)
@@ -170,6 +171,15 @@ class SolarPredictorTests(unittest.TestCase):
         self.assertEqual(validation_groups, model_groups)
         self.assertEqual(config.model.params.loss_type, "cross_entropy")
         self.assertEqual(float(config.model.params.focal_gamma), 2.0)
+        self.assertTrue(config.model.params.train_backbone)
+
+    def test_flare_configs_declare_the_same_backbone_training_mode(self) -> None:
+        paths = (
+            "configs/flare/solar_predictor_cnn.yaml",
+            "configs/flare/solar_predictor_vit.yaml",
+        )
+        modes = [OmegaConf.load(path).model.params.train_backbone for path in paths]
+        self.assertEqual(modes, [True, True])
 
     def test_cnn_forward_keeps_only_hmi_encoder_mapper_and_head(self) -> None:
         config = cnn_config()
@@ -426,6 +436,35 @@ class SolarPredictorTests(unittest.TestCase):
         with self.assertRaisesRegex(PretrainedCheckpointError, "class_weights"):
             changed_weights_model.on_load_checkpoint(payload)
 
+    def test_checkpoint_rejects_changed_backbone_training_mode(self) -> None:
+        config = cnn_config()
+        base_checkpoint = self.root / "optimization-checkpoint-base.ckpt"
+        write_solar_checkpoint(base_checkpoint, config)
+
+        trainable_model = self.make_predictor(
+            config, base_checkpoint, train_backbone=True
+        )
+        payload = {
+            "state_dict": trainable_model.state_dict(),
+            "hyper_parameters": dict(trainable_model.hparams),
+        }
+        trainable_model.on_save_checkpoint(payload)
+
+        frozen_model = self.make_predictor(
+            config, base_checkpoint, train_backbone=False
+        )
+        with self.assertRaisesRegex(PretrainedCheckpointError, "train_backbone"):
+            frozen_model.on_load_checkpoint(payload)
+
+        legacy_payload = dict(payload)
+        legacy_payload.pop("flare_optimization_config")
+        legacy_hparams = dict(legacy_payload["hyper_parameters"])
+        legacy_hparams.pop("train_backbone")
+        legacy_payload["hyper_parameters"] = legacy_hparams
+        trainable_model.on_load_checkpoint(legacy_payload)
+        with self.assertRaisesRegex(PretrainedCheckpointError, "train_backbone"):
+            frozen_model.on_load_checkpoint(legacy_payload)
+
     def test_legacy_checkpoint_is_cross_entropy_only(self) -> None:
         config = cnn_config()
         base_checkpoint = self.root / "legacy-loss-base.ckpt"
@@ -517,6 +556,63 @@ class SolarPredictorTests(unittest.TestCase):
             all(not module.training for module in model._pretrained_modules())
         )
 
+    def test_train_backbone_false_only_optimizes_new_downstream_head(self) -> None:
+        config = cnn_config()
+        checkpoint = self.root / "head-only.ckpt"
+        write_solar_checkpoint(checkpoint, config)
+        model = self.make_predictor(
+            config,
+            checkpoint,
+            train_backbone=False,
+            freeze_encoder_epochs=0,
+        )
+        pretrained_parameters = model._pretrained_parameters()
+        pretrained_ids = {id(parameter) for parameter in pretrained_parameters}
+
+        self.assertTrue(pretrained_parameters)
+        self.assertTrue(
+            all(not parameter.requires_grad for parameter in pretrained_parameters)
+        )
+        self.assertIsNotNone(model.contrastive_projector)
+        self.assertFalse(model.contrastive_projector.requires_grad)
+
+        model.train()
+        model(torch.randn(2, 1, 16, 16)).sum().backward()
+
+        self.assertTrue(
+            all(parameter.grad is None for parameter in pretrained_parameters)
+        )
+        self.assertTrue(
+            any(
+                parameter.grad is not None
+                for parameter in model.main_mapper.parameters()
+            )
+        )
+        self.assertTrue(
+            any(
+                parameter.grad is not None
+                for parameter in model.classifier.parameters()
+            )
+        )
+        self.assertTrue(
+            all(not module.training for module in model._pretrained_modules())
+        )
+
+        optimizer = model.configure_optimizers()
+        self.assertIsInstance(optimizer, torch.optim.AdamW)
+        self.assertEqual(len(optimizer.param_groups), 1)
+        optimized_ids = {
+            id(parameter)
+            for group in optimizer.param_groups
+            for parameter in group["params"]
+        }
+        expected_ids = {
+            id(parameter) for parameter in model.parameters() if parameter.requires_grad
+        }
+        self.assertEqual(optimized_ids, expected_ids)
+        self.assertTrue(pretrained_ids.isdisjoint(optimized_ids))
+        self.assertEqual(optimizer.param_groups[0]["lr"], model.learning_rate)
+
     def test_unfrozen_encoder_receives_gradients_and_optimizer_groups_are_static(
         self,
     ) -> None:
@@ -536,6 +632,14 @@ class SolarPredictorTests(unittest.TestCase):
         optimizer = model.configure_optimizers()
         self.assertIsInstance(optimizer, torch.optim.AdamW)
         self.assertEqual(len(optimizer.param_groups), 2)
+        self.assertEqual(
+            {id(parameter) for parameter in optimizer.param_groups[0]["params"]},
+            {id(parameter) for parameter in model._pretrained_parameters()},
+        )
+        self.assertEqual(
+            optimizer.param_groups[0]["lr"], model.encoder_learning_rate
+        )
+        self.assertEqual(optimizer.param_groups[1]["lr"], model.learning_rate)
 
     def test_lightning_fast_dev_run_logs_validation_metrics(self) -> None:
         config = cnn_config()

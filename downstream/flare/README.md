@@ -172,7 +172,7 @@ class_weights: null       # 可选：每个分组类别一个严格正权重
 
 `focal` 使用多类 softmax focal loss：`-(1-p_t)^gamma log(p_t)`。设置 `class_weights` 后，它同时作为交叉熵的类别权重或 focal loss 的类别 alpha 权重；两种 loss 都按 batch 内真实类别权重之和归一化，因此 `focal_gamma: 0` 与相同权重下的 `cross_entropy` 完全退化一致。类别权重整体乘一个常数不会改变 loss。loss 类型、Focal gamma、归约方式和类别权重都会进入完整 Lightning checkpoint 的续训兼容性检查；旧 checkpoint 没有 loss metadata 时只按交叉熵解释，不能静默改成 Focal 续训。
 
-前 5 epoch 冻结预训练分支时，参数仍从开始就保留在 optimizer 中，forward 用 `no_grad` 跳过其梯度；这避免在后续解冻时改变 optimizer 参数组。若改为多 GPU，必须显式使用 `strategy: ddp_find_unused_parameters_true`。
+`train_backbone` 控制预训练分支是否参与训练。设为 `false` 时，HMI encoder、可选的 VAE `quant_conv`、CNN `cls_proj` 和 contrastive projector 会永久冻结并从 optimizer 排除；新建的 mapper、adapter/gate 和分类 MLP 仍正常训练。设为 `true` 时保持完整微调，`freeze_encoder_epochs` 可选地让预训练分支先 warmup 冻结若干 epoch；若要从第 0 epoch 训练整个网络，把它设为 `0`。临时冻结期间预训练参数仍保留在 optimizer 中，forward 用 `no_grad` 跳过梯度，后续解冻不会改变参数组。完整 resume 不能切换 `train_backbone`，因为两种模式的 optimizer 参数组不同。若改为多 GPU，必须显式使用 `strategy: ddp_find_unused_parameters_true`。
 
 ## 统一测试入口
 

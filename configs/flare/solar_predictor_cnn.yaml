@@ -20,7 +20,9 @@ model:
           use_linear_attn: false
           dropout: 0.0
 
-    pretrained_ckpt_path: logs/solarchip_CNN_AE_base_zscore_2026-07-10T18-03-45/checkpoints/last.ckpt
+    # Epoch 187 is the run's recorded best validation checkpoint; last.ckpt is
+    # from the same epoch, but this path makes the selection criterion explicit.
+    pretrained_ckpt_path: logs/solarchip_CNN_AE_base_zscore_2026-07-10T18-03-45/checkpoints/epoch=000187_val_loss=1.0262.ckpt
     pretrained_prefix: model_dict.hmi
     allow_shared_all: false
 
@@ -40,6 +42,9 @@ model:
     learning_rate: 1.0e-4
     encoder_learning_rate: 1.0e-5
     weight_decay: 1.0e-4
+    # false: permanently freeze the pretrained branch and train only the new
+    # downstream mapper/adapter/classifier; true: fine-tune it after the warmup.
+    train_backbone: true
     freeze_encoder_epochs: 5
     scheduler: cosine
     max_epochs: 200
@@ -84,7 +89,7 @@ lightning:
       params:
         disabled: true
     early_stop:
-      target: lightning.pytorch.callbacks.EarlyStopping
+      target: pytorch_lightning.callbacks.EarlyStopping
       params:
         monitor: val_macro_f1
         mode: max

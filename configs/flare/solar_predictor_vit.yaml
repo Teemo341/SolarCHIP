@@ -15,9 +15,9 @@ model:
           layers: 12
           heads: 12
 
-    # The full last.ckpt is not readable by the current user. This readable raw
-    # state dict contains the same latest model weights; the loader strips its
-    # uniform outer "module." prefix before selecting model_dict.hmi.
+    # The full last.ckpt is not readable by the current user, so use the run's
+    # readable exported state dict. The loader strips its uniform outer
+    # "module." prefix before selecting model_dict.hmi.
     pretrained_ckpt_path: logs/solarchip/VIT_AE_base_zscore/2026-08-26T21-49-14/checkpoints/last_state_dict.ckpt
     pretrained_prefix: model_dict.hmi
     allow_shared_all: false
@@ -38,6 +38,9 @@ model:
     learning_rate: 1.0e-4
     encoder_learning_rate: 1.0e-5
     weight_decay: 1.0e-4
+    # false: permanently freeze the pretrained branch and train only the new
+    # downstream mapper/adapter/classifier; true: fine-tune it after the warmup.
+    train_backbone: true
     freeze_encoder_epochs: 5
     scheduler: cosine
     max_epochs: 200
@@ -82,7 +85,7 @@ lightning:
       params:
         disabled: true
     early_stop:
-      target: lightning.pytorch.callbacks.EarlyStopping
+      target: pytorch_lightning.callbacks.EarlyStopping
       params:
         monitor: val_macro_f1
         mode: max

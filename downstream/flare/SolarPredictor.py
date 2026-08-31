@@ -238,6 +238,7 @@ class SolarPredictor(pl.LightningModule):
         loss_type: str = "cross_entropy",
         focal_gamma: float = 2.0,
         metric_class_ids: Sequence[int] | None = None,
+        train_backbone: bool = True,
         freeze_encoder_epochs: int = 0,
         scheduler: str = "cosine",
         max_epochs: int = 200,
@@ -253,6 +254,8 @@ class SolarPredictor(pl.LightningModule):
             raise ValueError("dropout must be in [0, 1)")
         if attention_heads <= 0:
             raise ValueError("attention_heads must be positive")
+        if not isinstance(train_backbone, bool):
+            raise TypeError("train_backbone must be a boolean")
         if freeze_encoder_epochs < 0:
             raise ValueError("freeze_encoder_epochs cannot be negative")
         if learning_rate <= 0 or encoder_learning_rate <= 0:
@@ -341,6 +344,7 @@ class SolarPredictor(pl.LightningModule):
         )
         self.representation_dim = int(representation_dim)
         self.use_contrastive_residual = bool(use_contrastive_residual)
+        self.train_backbone = train_backbone
         self.freeze_encoder_epochs = int(freeze_encoder_epochs)
         self.learning_rate = float(learning_rate)
         self.encoder_learning_rate = float(encoder_learning_rate)
@@ -431,6 +435,12 @@ class SolarPredictor(pl.LightningModule):
             nn.Linear(head_hidden_dim, num_classes),
         )
 
+        if not self.train_backbone:
+            for parameter in self._pretrained_parameters():
+                parameter.requires_grad_(False)
+            for module in self._pretrained_modules():
+                module.eval()
+
         resolved_class_weights = self._validate_class_weights(
             class_weights, num_classes
         )
@@ -482,6 +492,7 @@ class SolarPredictor(pl.LightningModule):
                 "loss_type": self.loss_type,
                 "focal_gamma": self.focal_gamma,
                 "metric_class_ids": resolved_metric_ids,
+                "train_backbone": self.train_backbone,
                 "freeze_encoder_epochs": freeze_encoder_epochs,
                 "scheduler": scheduler,
                 "max_epochs": max_epochs,
@@ -517,6 +528,9 @@ class SolarPredictor(pl.LightningModule):
             if self.class_weights is None
             else self.class_weights.detach().cpu().tolist(),
         }
+        checkpoint["flare_optimization_config"] = {
+            "train_backbone": self.train_backbone,
+        }
 
     def on_load_checkpoint(self, checkpoint: Mapping[str, Any]) -> None:
         saved_groups = checkpoint.get("flare_class_groups")
@@ -546,6 +560,31 @@ class SolarPredictor(pl.LightningModule):
             raise PretrainedCheckpointError(
                 "A self-contained SolarPredictor restore requires a Lightning "
                 "checkpoint with a 'state_dict' mapping"
+            )
+
+        saved_optimization_config = checkpoint.get("flare_optimization_config")
+        if saved_optimization_config is None:
+            hyperparameters = checkpoint.get("hyper_parameters")
+            if not isinstance(hyperparameters, Mapping):
+                hyperparameters = {}
+            # SolarPredictor checkpoints created before this option always
+            # trained the backbone, so True is the only safe legacy meaning.
+            saved_train_backbone = hyperparameters.get("train_backbone", True)
+        elif isinstance(saved_optimization_config, Mapping):
+            saved_train_backbone = saved_optimization_config.get("train_backbone")
+        else:
+            raise PretrainedCheckpointError(
+                "Downstream checkpoint contains invalid "
+                "flare_optimization_config metadata"
+            )
+        if not isinstance(saved_train_backbone, bool):
+            raise PretrainedCheckpointError(
+                "Downstream checkpoint contains invalid train_backbone metadata"
+            )
+        if saved_train_backbone != self.train_backbone:
+            raise PretrainedCheckpointError(
+                "Downstream checkpoint train_backbone does not match the current "
+                f"model: {saved_train_backbone!r} != {self.train_backbone!r}"
             )
 
         saved_loss_config = checkpoint.get("flare_loss_config")
@@ -783,19 +822,21 @@ class SolarPredictor(pl.LightningModule):
             modules.append(self.cnn_cls_proj)
         return modules
 
-    def _encoder_is_frozen(self) -> bool:
-        return self.training and self.current_epoch < self.freeze_encoder_epochs
+    def _backbone_is_frozen(self) -> bool:
+        return (not self.train_backbone) or (
+            self.training and self.current_epoch < self.freeze_encoder_epochs
+        )
 
     def train(self, mode: bool = True) -> SolarPredictor:
         super().train(mode)
-        if mode and self._encoder_is_frozen():
+        if mode and self._backbone_is_frozen():
             for module in self._pretrained_modules():
                 module.eval()
         return self
 
     def on_train_epoch_start(self) -> None:
         for module in self._pretrained_modules():
-            module.train(not self._encoder_is_frozen())
+            module.train(not self._backbone_is_frozen())
 
     def _encode_hmi(self, hmi: torch.Tensor) -> torch.Tensor:
         latent = self.hmi_encoder(hmi)
@@ -822,8 +863,8 @@ class SolarPredictor(pl.LightningModule):
         if hmi.ndim != 4:
             raise ValueError(f"Expected HMI [B,C,H,W], got shape {tuple(hmi.shape)}")
 
-        encoder_frozen = self._encoder_is_frozen()
-        if encoder_frozen:
+        backbone_frozen = self._backbone_is_frozen()
+        if backbone_frozen:
             with torch.no_grad():
                 latent = self._encode_hmi(hmi)
                 contrastive = (
@@ -1024,16 +1065,21 @@ class SolarPredictor(pl.LightningModule):
         new_parameters = [
             parameter
             for parameter in self.parameters()
-            if id(parameter) not in pretrained_ids
+            if id(parameter) not in pretrained_ids and parameter.requires_grad
         ]
-        optimizer = torch.optim.AdamW(
-            [
+        parameter_groups = []
+        if self.train_backbone:
+            parameter_groups.append(
                 {
                     "params": pretrained_parameters,
                     "lr": self.encoder_learning_rate,
-                },
-                {"params": new_parameters, "lr": self.learning_rate},
-            ],
+                }
+            )
+        parameter_groups.append(
+            {"params": new_parameters, "lr": self.learning_rate}
+        )
+        optimizer = torch.optim.AdamW(
+            parameter_groups,
             weight_decay=self.weight_decay,
         )
 
