@@ -172,14 +172,51 @@ class SolarPredictorTests(unittest.TestCase):
         self.assertEqual(config.model.params.loss_type, "cross_entropy")
         self.assertEqual(float(config.model.params.focal_gamma), 2.0)
         self.assertTrue(config.model.params.train_backbone)
+        self.assertEqual(
+            dict(config.model.params.selection_score_weights),
+            {"accuracy": 0.4, "c_plus_tss": 0.15, "m_plus_tss": 0.45},
+        )
+        self.assertEqual(
+            config.lightning.callbacks.early_stop.params.monitor,
+            "val_selection_score",
+        )
+        self.assertEqual(
+            config.lightning.modelcheckpoint.params.monitor,
+            "val_selection_score",
+        )
 
-    def test_flare_configs_declare_the_same_backbone_training_mode(self) -> None:
+    def test_flare_configs_share_training_and_selection_contracts(self) -> None:
         paths = (
             "configs/flare/solar_predictor_cnn.yaml",
             "configs/flare/solar_predictor_vit.yaml",
         )
-        modes = [OmegaConf.load(path).model.params.train_backbone for path in paths]
-        self.assertEqual(modes, [True, True])
+        configs = [OmegaConf.load(path) for path in paths]
+        self.assertEqual(
+            [config.model.params.train_backbone for config in configs],
+            [True, True],
+        )
+        for config in configs:
+            self.assertEqual(
+                dict(config.model.params.selection_score_weights),
+                {"accuracy": 0.4, "c_plus_tss": 0.15, "m_plus_tss": 0.45},
+            )
+            self.assertEqual(
+                config.lightning.callbacks.early_stop.params.monitor,
+                "val_selection_score",
+            )
+            self.assertEqual(
+                config.lightning.callbacks.early_stop.params.mode,
+                "max",
+            )
+            self.assertEqual(
+                config.lightning.modelcheckpoint.params.monitor,
+                "val_selection_score",
+            )
+            self.assertEqual(config.lightning.modelcheckpoint.params.mode, "max")
+            self.assertEqual(
+                config.lightning.modelcheckpoint.params.filename,
+                "{epoch:06}-{val_selection_score:.4f}",
+            )
 
     def test_cnn_forward_keeps_only_hmi_encoder_mapper_and_head(self) -> None:
         config = cnn_config()
@@ -258,6 +295,110 @@ class SolarPredictorTests(unittest.TestCase):
                 class_groups=["0ABC", "MX"],
                 class_weights=[0.0, 1.0],
             )
+
+    def test_selection_weights_validate_threshold_compatibility(self) -> None:
+        config = cnn_config()
+        checkpoint = self.root / "selection-groups.ckpt"
+        write_solar_checkpoint(checkpoint, config)
+
+        with self.assertRaisesRegex(ValueError, r"cannot produce.*C\+"):
+            self.make_predictor(
+                config,
+                checkpoint,
+                class_groups=["0ABC", "MX"],
+                selection_score_weights={
+                    "accuracy": 0.4,
+                    "c_plus_tss": 0.15,
+                    "m_plus_tss": 0.45,
+                },
+            )
+
+        model = self.make_predictor(
+            config,
+            checkpoint,
+            class_groups=["0ABC", "MX"],
+            selection_score_weights={
+                "accuracy": 0.5,
+                "c_plus_tss": 0.0,
+                "m_plus_tss": 0.5,
+            },
+        )
+        self.assertNotIn("c_plus", model.selection_threshold_mappings)
+        self.assertIn("m_plus", model.selection_threshold_mappings)
+
+    def test_selection_weights_are_normalized_and_validated(self) -> None:
+        config = cnn_config()
+        checkpoint = self.root / "selection-weights.ckpt"
+        write_solar_checkpoint(checkpoint, config)
+        model = self.make_predictor(
+            config,
+            checkpoint,
+            selection_score_weights={
+                "accuracy": 4.0,
+                "c_plus_tss": 1.5,
+                "m_plus_tss": 4.5,
+            },
+        )
+        self.assertEqual(
+            model.selection_score_weights,
+            {"accuracy": 0.4, "c_plus_tss": 0.15, "m_plus_tss": 0.45},
+        )
+        self.assertEqual(
+            dict(model.hparams.selection_score_weights),
+            model.selection_score_weights,
+        )
+
+        invalid_values = (-1.0, float("nan"), float("inf"))
+        for invalid in invalid_values:
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    self.make_predictor(
+                        config,
+                        checkpoint,
+                        selection_score_weights={
+                            "accuracy": invalid,
+                            "c_plus_tss": 0.15,
+                            "m_plus_tss": 0.45,
+                        },
+                    )
+
+    def test_selection_score_matches_hand_calculated_confusion_metrics(self) -> None:
+        config = cnn_config()
+        checkpoint = self.root / "selection-metrics.ckpt"
+        write_solar_checkpoint(checkpoint, config)
+        model = self.make_predictor(
+            config,
+            checkpoint,
+            selection_score_weights={
+                "accuracy": 0.4,
+                "c_plus_tss": 0.15,
+                "m_plus_tss": 0.45,
+            },
+        )
+        confusion = torch.tensor(
+            [
+                [8, 1, 1, 0],
+                [2, 5, 2, 1],
+                [1, 2, 5, 2],
+                [0, 1, 3, 6],
+            ]
+        )
+
+        metrics = model._confusion_metric_values(confusion, "val")
+
+        torch.testing.assert_close(metrics["val_accuracy"], torch.tensor(0.6))
+        torch.testing.assert_close(
+            metrics["val_c_plus_tss"], torch.tensor(0.7, dtype=torch.float64)
+        )
+        torch.testing.assert_close(
+            metrics["val_m_plus_tss"], torch.tensor(0.6, dtype=torch.float64)
+        )
+        torch.testing.assert_close(
+            metrics["val_selection_score"],
+            torch.tensor(0.615, dtype=torch.float64),
+        )
+        self.assertEqual(float(metrics["val_c_plus_tss_valid"]), 1.0)
+        self.assertEqual(float(metrics["val_m_plus_tss_valid"]), 1.0)
 
     def test_default_cross_entropy_matches_pytorch(self) -> None:
         config = cnn_config()
@@ -465,6 +606,72 @@ class SolarPredictorTests(unittest.TestCase):
         with self.assertRaisesRegex(PretrainedCheckpointError, "train_backbone"):
             frozen_model.on_load_checkpoint(legacy_payload)
 
+    def test_checkpoint_preserves_selection_and_metric_id_semantics(self) -> None:
+        config = cnn_config()
+        base_checkpoint = self.root / "metric-checkpoint-base.ckpt"
+        write_solar_checkpoint(base_checkpoint, config)
+        weights = {
+            "accuracy": 0.4,
+            "c_plus_tss": 0.15,
+            "m_plus_tss": 0.45,
+        }
+        model = self.make_predictor(
+            config,
+            base_checkpoint,
+            metric_class_ids=[0, 1, 2],
+            selection_score_weights=weights,
+        )
+        payload = {
+            "state_dict": model.state_dict(),
+            "hyper_parameters": dict(model.hparams),
+        }
+        model.on_save_checkpoint(payload)
+
+        same_model = self.make_predictor(
+            config,
+            base_checkpoint,
+            metric_class_ids=[0, 1, 2],
+            selection_score_weights=weights,
+        )
+        same_model.on_load_checkpoint(payload)
+
+        changed_weights = dict(weights)
+        changed_weights["accuracy"] = 0.5
+        changed_weights["m_plus_tss"] = 0.35
+        changed_selection_model = self.make_predictor(
+            config,
+            base_checkpoint,
+            metric_class_ids=[0, 1, 2],
+            selection_score_weights=changed_weights,
+        )
+        with self.assertRaisesRegex(
+            PretrainedCheckpointError, "selection_score_weights"
+        ):
+            changed_selection_model.on_load_checkpoint(payload)
+
+        legacy_payload = dict(payload)
+        legacy_payload.pop("flare_metric_config")
+        legacy_hparams = dict(legacy_payload["hyper_parameters"])
+        legacy_hparams.pop("selection_score_weights")
+        legacy_payload["hyper_parameters"] = legacy_hparams
+        changed_selection_model.on_load_checkpoint(legacy_payload)
+
+        incomplete_metric_payload = dict(payload)
+        incomplete_metric_payload["flare_metric_config"] = {"version": 1}
+        with self.assertRaisesRegex(
+            PretrainedCheckpointError, "missing selection_score_weights"
+        ):
+            same_model.on_load_checkpoint(incomplete_metric_payload)
+
+        changed_metric_ids_model = self.make_predictor(
+            config,
+            base_checkpoint,
+            metric_class_ids=[1, 2, 3],
+            selection_score_weights=weights,
+        )
+        with self.assertRaisesRegex(PretrainedCheckpointError, "metric_class_ids"):
+            changed_metric_ids_model.on_load_checkpoint(payload)
+
     def test_legacy_checkpoint_is_cross_entropy_only(self) -> None:
         config = cnn_config()
         base_checkpoint = self.root / "legacy-loss-base.ckpt"
@@ -645,7 +852,15 @@ class SolarPredictorTests(unittest.TestCase):
         config = cnn_config()
         checkpoint = self.root / "trainer.ckpt"
         write_solar_checkpoint(checkpoint, config)
-        model = self.make_predictor(config, checkpoint)
+        model = self.make_predictor(
+            config,
+            checkpoint,
+            selection_score_weights={
+                "accuracy": 0.4,
+                "c_plus_tss": 0.15,
+                "m_plus_tss": 0.45,
+            },
+        )
         loader = DataLoader(SyntheticFlareDataset(), batch_size=2)
         trainer = pl.Trainer(
             accelerator="cpu",
@@ -664,6 +879,10 @@ class SolarPredictorTests(unittest.TestCase):
         self.assertIn("val_loss", trainer.callback_metrics)
         self.assertIn("val_macro_f1", trainer.callback_metrics)
         self.assertIn("val_balanced_accuracy", trainer.callback_metrics)
+        self.assertIn("val_c_plus_tss", trainer.callback_metrics)
+        self.assertIn("val_m_plus_tss", trainer.callback_metrics)
+        self.assertIn("val_selection_score", trainer.callback_metrics)
+        self.assertTrue(torch.isfinite(trainer.callback_metrics["val_selection_score"]))
 
     def test_training_rejects_mismatched_dataset_class_groups(self) -> None:
         config = cnn_config()
