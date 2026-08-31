@@ -34,15 +34,26 @@ A&A 702, A83 的 SolarCHIP 对比版本。论文全文见
 4. 输出层为 identity，不使用 `tanh`，因为 SolarCHIP 的 HMI target 是无界
    z-score。
 
-论文描述的两个训练阶段被折叠进一次 `Trainer.fit(max_epochs=200)`：
+论文描述的两个训练阶段被折叠进一次 `Trainer.fit`；默认配置使用 200 epoch，
+0094 零场塌缩修复配置使用 400 epoch：
 
-- Epoch 0–99（Stage 1）：paired guidance + HMI 重建 L1。
-- Epoch 100–199（Stage 2）：paired guidance 作为 `stop_gradient` 教师；source
-  guidance 用 L1 拟合教师，同时继续使用 source-only guidance 做 HMI 重建 L1。
+- 默认 Epoch 0–99（0094 配置为 0–199，Stage 1）：paired guidance + HMI 重建目标，
+  同时让 source guidance predictor 拟合停止梯度的 paired guidance。这样部署路径不必
+  等到 Stage 2 才开始学习。
+- 之后的 Stage 2：固定 paired guidance teacher 与 Stage-1 generator，只训练
+  source guidance predictor 以 L1 拟合教师向量。这与作者公开的 Stage-2 配置中
+  图像重建损失权重全部为 0 的训练边界一致。
+
+默认重建目标仍是全图 L1，以保持旧配置兼容。针对 0094→HMI 中观测到的零场
+塌缩，`aia_hmi_i2iwfilm_0094.yaml` 改用强/弱场分组 SmoothL1：先分别计算
+`|B| >= 100 G` 与其余像素的均值损失，再由 `strong_field_loss_fraction` 指定强场
+区域占总损失的比例。0094 当前取 10%；它既避免强场贡献随约 0.56% 的像素频率
+消失，也修正上一轮 50% 配置导致的约 179 倍单像素权重和大块饱和输出。该设置是
+SolarCHIP 运行诊断后的项目适配，不是 Sayez 论文报告的超参数。
 
 所有参数从开始到结束始终处于同一个 AdamW 参数组；代码不在阶段切换时动态
-修改 `requires_grad`，以免破坏 DDP reducer。Stage 1 不使用 source predictor，
-Stage 2 不反传 paired encoder，所以配置必须使用
+修改 `requires_grad`，以免破坏 DDP reducer。Stage 1 的 source predictor 只接收
+停止梯度后的教师向量，Stage 2 不反传 paired encoder 和 generator，所以配置必须使用
 `ddp_find_unused_parameters_true`。
 
 ## 训练参数的证据等级
@@ -63,23 +74,34 @@ optimizer 或破坏 DDP 参数注册。这些是 **SolarCHIP 实验口径**，�
 
 ## 验证指标
 
-`validation_step`、`test_step` 和 `log_images` 始终只调用 source-only 路径：
+`validation_step`、`test_step` 和 `log_images` 的主生成结果始终使用 source-only 路径：
 
-- `val/loss`：归一化空间 L1，checkpoint 监控量；
-- `val/paired_teacher_l1`：仅 Stage 1 记录的 paired-guidance 重建 L1，用于诊断
+`log_images` 的 `generated` 始终是 source-only 部署路径；另记录
+`generated_paired_teacher`，用于判断 paired teacher 是否学到结构以及 Stage 2
+是否完成 guidance 蒸馏，不用于 checkpoint 排序或最终结果。
+
+- `val/loss`：配置选择的归一化空间重建目标；
+- `val/reconstruction_l1`、`val/strong_field_l1`：全图与强场区域的原始 L1；
+- `val/prediction_std`、`val/target_std`、`val/amplitude_ratio`、
+  `val/prediction_abs_mean`：零场/幅度塌缩诊断量；
+- `val/spatial_gradient_ratio`、`val/prediction_strong_field_fraction` 及对应的
+  `paired_teacher_*`：分别检查过度平滑/大块结构和强场面积膨胀；
+- `val/paired_teacher_l1`、`val/paired_teacher_pcc`、`val/paired_teacher_ccc`、
+  `val/paired_teacher_amplitude_ratio`：paired-guidance 路径诊断量，用于诊断
   teacher 与 U-Net；它看过真实 HMI，因此绝不用于 checkpoint 排序或最终比较；
 - `rmse_gauss`、`physical_mae_gauss`：反解 signed-log1p/z-score 后的物理量；
 - PCC、CCC；
+- `val/checkpoint_ccc`：始终等于 deployable `val/ccc`；Stage 1 已同步训练 source
+  predictor，因此有效的早期最优模型也允许被保存；
 - `strong_field_polarity`：`|HMI_target| >= 100 G` 像素上的符号准确率；
 - `delta_ssim`：`SSIM(pred, target) - SSIM(0, target)`。预测和目标先反归一化，
   再截断至 ±1500 G 并缩放至 `[-1, 1]`。实现使用自包含的 11×11 局部 SSIM，
   不依赖 `torchmetrics`。论文没有公开足以保证逐位一致的 SSIM 窗函数细节，因此
   该量遵循论文定义，但不承诺和论文软件栈 bitwise 一致。
 
-Stage 1 的 `val/loss` 仍坚持走尚未训练的 source-only predictor，所以早期数值不
-代表 paired teacher 正在学习的重建质量；应结合 `val/paired_teacher_l1` 观察。
-最终比较只应使用 Stage 2 的 source-only checkpoint。此选择避免为了得到好看的
-Stage 1 验证值而把真实 HMI 泄漏到部署路径或最终选模指标。
+Stage 1 的 `val/loss` 坚持走 source-only predictor；应结合
+`val/paired_teacher_l1` 判断 teacher/generator 是否在学习。最终比较使用保存的
+source-only 最优 checkpoint，不把真实 HMI 泄漏到部署路径或最终选模指标。
 
 HMI 的反变换是：
 

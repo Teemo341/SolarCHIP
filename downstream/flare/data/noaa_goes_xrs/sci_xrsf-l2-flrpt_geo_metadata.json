@@ -1,0 +1,191 @@
+{
+    "global_attributes": {
+        "Conventions": "ACDD-1.3, Spase v2.2.6",
+        "title": "L2 XRS flare report",
+        "summary": "The flare report combines information from both the GOES XRS flare summary files and the SWPC solar event reports. This report provides, for each flare event, the start, peak, and end times, as well as other information such as flare class, irradiances, and flare location.",
+        "keywords": "NumericalData.MeasurementType.Irradiance",
+        "keywords_vocabulary": "SPASE: Space Physics Archive Search and Extract Data Model version 2.2.6, GCMD: NASA Global Change Master Directory (GCMD) Earth Science Keywords version 8.5",
+        "naming_authority": "gov.nesdis.noaa",
+        "history": "See algorithm information.",
+        "source": "GOES XRS L2 flsum science files, SWPC solar event reports",
+        "processing_level": "Level 2",
+        "processing_level_description": "Derived products",
+        "license": "These data may be redistributed and used without restriction. ",
+        "creator_name": "NOAA NCEI STP Solar Irradiance Team",
+        "creator_type": "group",
+        "creator_institution": "DOC/NOAA/NESDIS/NCEI/COGS/GSDB/STP",
+        "creator_email": "goesr.exis@noaa.gov",
+        "creator_url": "https://www.ncei.noaa.gov/",
+        "institution": "DOC/NOAA/NESDIS",
+        "publisher_name": "National Centers for Environmental Information",
+        "publisher_type": "institution",
+        "publisher_institution": "DOC/NOAA/NESDIS/NCEI",
+        "publisher_email": "ncei.info@noaa.gov",
+        "publisher_url": "https://www.ncei.noaa.gov/",
+        "instrument": "GOES-1 through -19; Solar Observing Optical Network (SOON) ",
+        "program": "Geostationary Operational Environmental Satellite, R-Series (GOES-R)",
+        "project": "Geostationary Operational Environmental Satellite R-Series (GOES-R) Core Ground Segment, Satellite Product Analysis and Distribution System (SPADES)",
+        "time_coverage_resolution": "PT1M",
+        "algorithm_parameters": "None",
+        "date_created": "2026-08-20 09:02:40.153548",
+        "time_coverage_start": "19950103",
+        "time_coverage_end": "20260816",
+        "flrpt_algorithm_version": "1-0-1"
+    },
+    "variable_attributes": {
+        "time": {
+            "long_name": "Record start time for flare peak. Neglects leap seconds since 1970-01-01. ",
+            "comments": "Time [UTC] = 1 Jan 1970 00:00:00 [UTC] + time[secs] + n[secs]. To ignore leap seconds, set n = 0. To include leap seconds, set n = number of leap seconds since 1 Jan 1970."
+        },
+        "start_time": {
+            "long_name": "Flare event start time"
+        },
+        "end_time": {
+            "long_name": "Flare event end time",
+            "comments": "Time when flare irradiance has declined by 1/2 relative to background."
+        },
+        "flare_id": {
+            "long_name": "SWPC flare identifier",
+            "comments": "Unique identifier based on flare event start with format YYYYMMDDHHMM.  Same as in flsum product.",
+            "units": "1",
+            "valid_min": 0
+        },
+        "xrsb_irrad": {
+            "long_name": "1-minute averaged irradiance for XRS-B",
+            "units": "W/m2",
+            "valid_min": 9.999999960041972e-12,
+            "valid_max": 0.10000000149011612
+        },
+        "flare_class": {
+            "long_name": "Flare class",
+            "comments": "Recorded at flare peak."
+        },
+        "xrsb_irrad_source": {
+            "long_name": "Satellite used to measure flare irradiance",
+            "units": "1",
+            "valid_min": 1,
+            "valid_max": 19,
+            "flag_values": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10,
+                11,
+                12,
+                13,
+                14,
+                15,
+                16,
+                17,
+                18,
+                19
+            ],
+            "flag_meanings": "GOES-1 GOES-2 GOES-3 GOES-4 GOES-5 GOES-6 GOES-7 GOES-8 GOES-9 GOES-10 GOES-11 GOES-12 GOES-13 GOES-14 GOES-15 GOES-16 GOES-17 GOES-18 GOES-19"
+        },
+        "background_irrad": {
+            "long_name": "Background irradiance",
+            "comments": "Recorded at flare start.",
+            "units": "W/m2",
+            "valid_min": 9.999999717180685e-10,
+            "valid_max": 0.10000000149011612
+        },
+        "integrated_irrad_peak": {
+            "long_name": "Integrated irradiance between flare start and peak",
+            "units": "J/m2",
+            "valid_min": 9.999999717180685e-10
+        },
+        "integrated_irrad_end": {
+            "long_name": "Integrated irradiance between flare start and end",
+            "comments": "Integrated irradiance between flare start and end, where flare end is when flare irradiance has declined by 1/2 relative to background.",
+            "units": "J/m2",
+            "valid_min": 9.999999717180685e-10
+        },
+        "flare_loc_swpc_hgs": {
+            "long_name": "Flare location in heliographic Stonyhurst coordinates (lon, lat) from ground-based observatories or GOES-12 SXI. Data obtained from SWPC solar event reports.",
+            "comments": "Values for on-disk flares only.",
+            "units": "degrees, degrees",
+            "valid_min": -180.0,
+            "valid_max": 180.0
+        },
+        "flare_loc_swpc_source": {
+            "long_name": "Source of flare_loc_swpc_hgs",
+            "comments": "Ground stations are Culgoora, Australia (CUL) and Solar Observing Optical Network (SOON) stations: Holloman AFB, USA (HOL); RAAF Learmonth, Australia (LEA); Ramey AFB, Puerto Rico, USA (RAM); San Vito dei Normanni Air Station, Italy (SVI); and combined (COM) multiple ground stations. Satellite flare locations are from GOES-12 Solar X-Ray Imager (SXI) or SDO Atmospheric Imaging Assembly (AIA) 193nm channel.",
+            "units": "1",
+            "valid_min": 0,
+            "valid_max": 7,
+            "flag_values": [
+                0,
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7
+            ],
+            "flag_meanings": "COM CUL HOL LEA RAM SVI SXI AIA_193"
+        },
+        "flare_loc_xrs_hgs": {
+            "long_name": "Flare location in heliographic Stonyhurst coordinates (lon, lat) provided by satellite",
+            "comments": "Values for on-disk flares only.",
+            "units": "degrees, degrees",
+            "valid_min": -180.0,
+            "valid_max": 180.0
+        },
+        "flare_loc_xrs_hpc": {
+            "long_name": "Flare location in helioprojective Cartesian coordinates (x, y) provided by satellite",
+            "units": "arcsec, arcsec"
+        },
+        "flare_loc_xrs_source": {
+            "long_name": "Source of flare_loc_xrs_hgs and flare_loc_xrs_hpc",
+            "comments": "GOES Satellite X-Ray Sensor (XRS).",
+            "units": "1",
+            "valid_min": 0,
+            "valid_max": 3,
+            "flag_values": [
+                0,
+                1,
+                2,
+                3
+            ],
+            "flag_meanings": "GOES-16_XRS GOES-17_XRS GOES-18_XRS GOES-19_XRS"
+        },
+        "sequential_flare_num": {
+            "long_name": "Number in flare sequence",
+            "comments": "Flare number for a multiple flare sequence. 0=no flare, 1=first flare, 2=second flare, etc. Incremented at flare start. For previous flare, if peak was <90 minutes earlier and had no flare end, then flare_num>1.",
+            "units": "1",
+            "valid_min": 1,
+            "valid_max": 10
+        },
+        "event_id_swpc": {
+            "long_name": "Flare event ID 'bin' number assigned by SWPC",
+            "units": "1",
+            "valid_min": 0,
+            "valid_max": 9999
+        },
+        "peak_saturated": {
+            "long_name": "Flare peak saturation flag",
+            "comments": "Saturation only occurred on GOES-1 through GOES-12.",
+            "units": "1",
+            "valid_min": 0,
+            "valid_max": 1,
+            "flag_values": [
+                0,
+                1
+            ],
+            "flag_meanings": "unsaturated saturated"
+        },
+        "active_region": {
+            "long_name": "Active region number",
+            "units": "1",
+            "valid_min": 1,
+            "valid_max": 9999
+        }
+    }
+}

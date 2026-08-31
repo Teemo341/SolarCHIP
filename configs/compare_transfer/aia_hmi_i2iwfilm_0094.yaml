@@ -77,6 +77,8 @@ lightning:
 
   modelcheckpoint:
     params:
+      # Always selects by the deployable source-only path. The source guidance
+      # predictor now receives distillation gradients from the first epoch.
       monitor: val/loss
       filename: '{epoch:06}'
       mode: min

@@ -1,0 +1,51 @@
+{
+  "schema_version": 2,
+  "source_catalog": "/Volumes/si0024037txx/home/ssy/SolarCHIP/downstream/flare/data/noaa_goes_xrs/goes_xrs_flare_report.csv",
+  "source_catalog_sha256": "b272cdc9995b3033d3cf8613b6ecf45a6d988e644d36bf97e7dc0c052ae6fc1d",
+  "source_metadata": "/Volumes/si0024037txx/home/ssy/SolarCHIP/downstream/flare/data/noaa_goes_xrs/sci_xrsf-l2-flrpt_geo_metadata.json",
+  "source_metadata_sha256": "698175bb30b62420a86b209cb8c4324033c04549938c79527eba35fa4612411d",
+  "source_algorithm_version": "1-0-1",
+  "source_license": "These data may be redistributed and used without restriction. ",
+  "manifest_transport": "jina",
+  "manifest_schema_version": 3,
+  "event_time_column": "start_time",
+  "day_semantics": "UTC calendar day of start_time; highest catalogued GOES letter class wins",
+  "zero_semantics": "No flare event is catalogued in that UTC day; this is not proof that no physical A/B microflare occurred",
+  "dataset_epoch": "2010-05-01",
+  "source_metadata_coverage_start": "1995-01-03",
+  "source_metadata_coverage_end": "2026-08-16",
+  "local_catalog_coverage_start": "2010-01-01",
+  "local_catalog_coverage_end": "2026-08-16",
+  "coverage_start": "2010-05-01",
+  "coverage_end": "2026-08-16",
+  "number_of_days": 5952,
+  "label_mapping": {
+    "0": "none",
+    "1": "A",
+    "2": "B",
+    "3": "C",
+    "4": "M",
+    "5": "X"
+  },
+  "daily_label_counts": {
+    "0": 1166,
+    "1": 0,
+    "2": 1135,
+    "3": 2323,
+    "4": 1176,
+    "5": 152
+  },
+  "catalog_rows_seen": 43699,
+  "exact_duplicate_rows_skipped": 0,
+  "events_in_requested_coverage": 42929,
+  "event_class_counts": {
+    "A": 6,
+    "B": 14156,
+    "C": 25393,
+    "M": 3195,
+    "X": 179
+  },
+  "output_path": "/Volumes/si0024037txx/home/ssy/SolarCHIP/downstream/flare/data/flare_daily_labels.csv",
+  "output_sha256": "57a739c83d9a8f2adf0459d8ab882ff6af3292e5aa55d51198d3122551c81916",
+  "summary_path": "/Volumes/si0024037txx/home/ssy/SolarCHIP/downstream/flare/data/flare_daily_labels.summary.json"
+}

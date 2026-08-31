@@ -17,8 +17,7 @@ def download_convert(modal, time_interval = [0, 1e+32], time_step = 1):
     download_num = 0
     error_url = []
     error_path = f'./data/download_error/{modal}'
-    if not os.path.exists(error_path):
-        os.makedirs(error_path)
+    os.makedirs(error_path, exist_ok=True)
 
     pbar = tqdm(range(time_interval[0], time_interval[1]))
     for i in pbar:
@@ -66,6 +65,7 @@ def download_convert(modal, time_interval = [0, 1e+32], time_step = 1):
                     os.remove(path_pt)                           
         except Exception as e:
             error_url.append(url)
+            os.makedirs(error_path, exist_ok=True)
             with open(f'{error_path}/error_url.txt', 'a') as f:
                 f.writelines(f'{error_url[-1]}\n')
         

@@ -1,7 +1,7 @@
 import torch
 
-# DATA_ROOT = "/mnt/tianwen-tianqing-nas/tianwen/ctf/data"
-DATA_ROOT = "/mnt/zj-data/data/ssy/data/sol"
+DATA_ROOT = "/mnt/tianwen-tianqing-nas/tianwen/ctf/data"
+# DATA_ROOT = "/mnt/zj-data/data/ssy/data/sol"
 
 
 if torch.cuda.is_available():
