@@ -60,44 +60,6 @@ def class_reduction_mappings(
     }
 
 
-def threshold_reduction_mappings(
-    class_groups: Sequence[str],
-) -> dict[str, tuple[int, ...]]:
-    """Return only the C+ and M+ mappings used during training."""
-
-    return {
-        threshold: threshold_reduction_mapping(class_groups, threshold)
-        for threshold in ("c_plus", "m_plus")
-    }
-
-
-def threshold_reduction_mapping(
-    class_groups: Sequence[str],
-    threshold: str,
-) -> tuple[int, ...]:
-    """Return one binary threshold mapping for grouped output classes."""
-
-    groups = normalize_class_groups(class_groups)
-    ranks = {symbol: index for index, symbol in enumerate(BASE_CLASS_SYMBOLS)}
-    definitions = {
-        "c_plus": ("C", "C+"),
-        "m_plus": ("M", "M+"),
-    }
-    if threshold not in definitions:
-        raise ValueError(
-            f"threshold must be one of {list(definitions)}, got {threshold!r}"
-        )
-    boundary_symbol, description = definitions[threshold]
-    return _group_mapping(
-        groups,
-        {
-            symbol: int(rank >= ranks[boundary_symbol])
-            for symbol, rank in ranks.items()
-        },
-        description,
-    )
-
-
 def collapse_confusion(
     confusion: torch.Tensor,
     mapping: Sequence[int],
@@ -145,25 +107,3 @@ def binary_metric_values(confusion: torch.Tensor) -> dict[str, float]:
         "tss": _safe_ratio(tp, tp + fn) - _safe_ratio(fp, fp + tn),
         "acc": _safe_ratio(tp + tn, total),
     }
-
-
-def binary_true_skill_statistic(
-    confusion: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return TSS and whether both true classes have non-zero support.
-
-    TSS is undefined when a validation epoch contains no positive or no
-    negative examples.  The returned score is conservatively set to zero in
-    that case, and the validity tensor lets callers expose the condition.
-    """
-
-    if tuple(confusion.shape) != (2, 2):
-        raise ValueError("binary confusion must have shape [2,2]")
-    source = confusion.to(torch.float64)
-    tn, fp = source[0]
-    fn, tp = source[1]
-    positive_support = tp + fn
-    negative_support = fp + tn
-    valid = (positive_support > 0) & (negative_support > 0)
-    tss = tp / positive_support.clamp_min(1.0) - fp / negative_support.clamp_min(1.0)
-    return torch.where(valid, tss, torch.zeros_like(tss)), valid.to(source.dtype)

@@ -160,19 +160,7 @@ python -m solarchip.main.train \
 
 不能省略 `-b`：当前 `train.py` 会在 resume 时把 argparse 的默认 VQGAN 配置追加到已保存配置之后，进而覆盖分类模型配置。也不要把 Ctrl-C 时 `SetupCallback` 写出的 `last_state_dict.ckpt` 当作完整 resume checkpoint；它只有裸 `state_dict`，应使用 `ModelCheckpoint` 生成的 `last.ckpt`。模型参数里的 `max_epochs` 控制 cosine scheduler，trainer 的 `max_epochs` 控制训练终点，两处应保持一致。
 
-配置只读取 `modal_list: ['hmi']`。SolarPredictor 接收与 Dataset 相同的 `class_groups`，并用组数自动确定分类头、confusion matrix、class-weight 长度及指标类别数；默认输出 4 类。训练启动前会逐个核对 train/validation/test Dataset 的规范化分组，连组顺序都必须完全一致，否则在首个 batch 前报错。checkpoint 同时保存并校验分组语义，因此即便两种方案恰好都是四分类，也不会静默错用 logits。旧的六分类 downstream checkpoint 不能完整 resume 到默认四分类，应从 SolarCHIP 预训练 checkpoint 开始新训练。`save_weights_only: false`、`save_last: true`。
-
-CNN/ViT 正式配置以 `val_selection_score` 选择 checkpoint 并 early stop：
-
-```text
-val_selection_score = 0.40 * val_accuracy
-                    + 0.15 * val_c_plus_tss
-                    + 0.45 * val_m_plus_tss
-```
-
-默认 `class_groups: ['0AB','C','M','X']` 时，`val_accuracy` 就是四分类 ACC；M+ 权重最高以强调高影响耀发，ACC 项则避免模型只优化阈值二分类。权重通过 `selection_score_weights` 配置，输入会自动归一化为和为 1；设为 `null` 会关闭 selection score。每个验证 epoch 都先聚合完整 confusion matrix，再计算 C+/M+ TSS，因此 Focal loss 不影响 ACC/TSS 的记录方式。若一个 epoch 缺少某阈值的正类或负类，该 TSS 保守记为 0，并把对应的 `val_*_tss_valid` 记为 0。
-
-自定义分组不能跨过参与选模的阈值。例如 `['0ABC','MX']` 已经合并了 C+ 的正负两侧，无法从其预测恢复 C+ TSS；此时只有把 `c_plus_tss` 权重设为 0 才能使用该分组。模型会在训练前直接检查，不会用猜测值选 checkpoint。
+配置只读取 `modal_list: ['hmi']`。SolarPredictor 接收与 Dataset 相同的 `class_groups`，并用组数自动确定分类头、confusion matrix、class-weight 长度及指标类别数；默认输出 4 类。训练启动前会逐个核对 train/validation/test Dataset 的规范化分组，连组顺序都必须完全一致，否则在首个 batch 前报错。checkpoint 同时保存并校验分组语义，因此即便两种方案恰好都是四分类，也不会静默错用 logits。旧的六分类 downstream checkpoint 不能完整 resume 到默认四分类，应从 SolarCHIP 预训练 checkpoint 开始新训练。checkpoint 以 `val_macro_f1` 选择，且 `save_weights_only: false`、`save_last: true`。
 
 分类目标通过模型超参数选择，默认仍是普通交叉熵：
 

@@ -140,13 +140,6 @@ class TrainerSetup:
             },
             "cuda_callback": {
                 "target": "solarchip.utils.callback.CUDACallback"
-            },
-            # Replaces the default RichProgressBar. The default one reads
-            # trainer.progress_bar_metrics in on_train_epoch_end on rank 0 only,
-            # which syncs epoch-level sync_dist metrics in a different collective
-            # order than the other ranks -> NCCL watchdog timeout at epoch end.
-            "progress_bar": {
-                "target": "solarchip.utils.callback.SafeRichProgressBar"
             }
         }
         if version.parse(pl.__version__) >= version.parse('1.4.0'):

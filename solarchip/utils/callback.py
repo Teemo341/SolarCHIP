@@ -11,36 +11,14 @@ import torchvision
 from torchvision.utils import save_image
 try:
     import lightning.pytorch as pl
-    from lightning.pytorch.callbacks import Callback, LearningRateMonitor, RichProgressBar
+    from lightning.pytorch.callbacks import Callback, LearningRateMonitor
     from lightning.pytorch.utilities.rank_zero import rank_zero_only
     from lightning.pytorch.utilities import rank_zero_info
 except ImportError:
     import pytorch_lightning as pl
-    from pytorch_lightning.callbacks import Callback, LearningRateMonitor, RichProgressBar
+    from pytorch_lightning.callbacks import Callback, LearningRateMonitor
     from pytorch_lightning.utilities.rank_zero import rank_zero_only
     from pytorch_lightning.utilities import rank_zero_info
-
-
-class SafeRichProgressBar(RichProgressBar):
-    """RichProgressBar that never pulls epoch metrics at epoch end.
-
-    ``RichProgressBar.on_train_epoch_end`` calls ``_update_metrics``, which
-    reads ``trainer.progress_bar_metrics``. For epoch-level metrics logged with
-    ``sync_dist=True`` this triggers ``_ResultMetric.compute()`` (and its
-    ``all_reduce`` sync) on rank 0 ONLY, because the progress bar is disabled
-    on all other ranks. Those ranks sync the same metric later in
-    ``_logger_connector.on_epoch_end()``, so rank 0 enqueues collectives in a
-    different order than ranks 1-3 and NCCL deadlocks (watchdog timeout at the
-    end of the epoch). Skipping the epoch-end metric refresh keeps the
-    collective streams aligned on all ranks.
-    """
-
-    def on_train_epoch_end(self, trainer, pl_module):
-        # Only refresh the display. Do NOT call self._update_metrics() here:
-        # reading trainer.progress_bar_metrics would sync epoch metrics on rank 0
-        # only, deadlocking NCCL against the other ranks' later metric sync.
-        self.refresh()
-
 
 class SetupCallback(Callback):
     def __init__(self, resume, now, logdir, ckptdir, cfgdir, config, lightning_config):

@@ -38,12 +38,6 @@ model:
     loss_type: focal
     focal_gamma: 2.0
     metric_class_ids: [0, 1, 2, 3]
-    # val_selection_score = 0.40 * grouped ACC
-    #                     + 0.15 * C+ TSS + 0.45 * M+ TSS.
-    selection_score_weights:
-      accuracy: 0.40
-      c_plus_tss: 0.15
-      m_plus_tss: 0.45
 
     learning_rate: 1.0e-4
     encoder_learning_rate: 1.0e-5
@@ -97,16 +91,16 @@ lightning:
     early_stop:
       target: pytorch_lightning.callbacks.EarlyStopping
       params:
-        monitor: val_selection_score
+        monitor: val_macro_f1
         mode: max
         patience: 30
         check_finite: true
 
   modelcheckpoint:
     params:
-      monitor: val_selection_score
+      monitor: val_macro_f1
       mode: max
-      filename: '{epoch:06}-{val_selection_score:.4f}'
+      filename: '{epoch:06}-{val_macro_f1:.4f}'
       save_top_k: 1
       save_last: true
       every_n_epochs: 1

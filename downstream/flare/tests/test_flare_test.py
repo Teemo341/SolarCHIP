@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import torch
 from omegaconf import OmegaConf
 
-from downstream.flare.data.metrics import binary_true_skill_statistic
 from downstream.flare.test import (
     binary_metric_values,
     class_reduction_mappings,
@@ -77,16 +76,6 @@ class FlareEvaluationMetricTests(unittest.TestCase):
                 "acc": 1.0,
             },
         )
-
-    def test_training_tss_marks_missing_true_class_support_invalid(self) -> None:
-        for confusion in (
-            torch.tensor([[5, 0], [0, 0]]),
-            torch.tensor([[0, 0], [0, 5]]),
-        ):
-            with self.subTest(confusion=confusion.tolist()):
-                tss, valid = binary_true_skill_statistic(confusion)
-                self.assertEqual(float(tss), 0.0)
-                self.assertEqual(float(valid), 0.0)
 
     def test_six_class_mapping_and_crossing_group_rejection(self) -> None:
         mappings = class_reduction_mappings(("0", "A", "B", "C", "M", "X"))
