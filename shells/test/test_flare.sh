@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 python -m downstream.flare.test \
-  -r logs/compare_flare/deepswm_k1_weighted_ce_only/2026-09-01T10-15-26/checkpoints/last.ckpt \
+  -r logs/flare/solar_predictor_vit_full/2026-09-01T16-42-51/checkpoints/last.ckpt \
   --metrics all
 
 python -m downstream.flare.test \
-  -r logs/compare_flare/deepswm_k1_weighted_ce_only/2026-09-01T10-15-26/checkpoints/macro-f1-000004-0.1604.ckpt \
+  -r logs/flare/solar_predictor_vit_full/2026-09-01T16-42-51/checkpoints/epoch=000000-val_macro_f1=0.2660.ckpt \
   --metrics all
 
 # python -m downstream.flare.test \
