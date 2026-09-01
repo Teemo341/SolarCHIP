@@ -466,7 +466,15 @@ class SolarPredictor(pl.LightningModule):
             torch.tensor(resolved_metric_ids, dtype=torch.long),
             persistent=True,
         )
-        self.train_confusion = MulticlassConfusionMatrix(num_classes=num_classes)
+        # Keep train-epoch metric computation rank-local. A distributed
+        # compute here runs after Lightning's rank-zero progress bar may have
+        # started resolving sync_dist train_loss, which can invert collective
+        # ordering across ranks. Validation/test remain globally synchronized
+        # because they drive checkpoint selection and reported evaluation.
+        self.train_confusion = MulticlassConfusionMatrix(
+            num_classes=num_classes,
+            sync_on_compute=False,
+        )
         self.val_confusion = MulticlassConfusionMatrix(num_classes=num_classes)
         self.test_confusion = MulticlassConfusionMatrix(num_classes=num_classes)
 

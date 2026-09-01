@@ -654,9 +654,19 @@ class DeepSWM(pl.LightningModule):
         }
 
     def _log_epoch_metrics(self, split: str, accumulator: SplitAccumulator) -> None:
-        confusion, mplus_brier_sum, sample_count = accumulator.synchronized(
-            device=self.device
-        )
+        if split == "train":
+            # Keep the pre-08347eb train-epoch behavior: do not insert custom
+            # collectives after Lightning's rank-zero progress bar has begun
+            # resolving pending sync_dist epoch losses. Validation/test retain
+            # their global synchronization because those metrics select and
+            # evaluate checkpoints.
+            confusion = accumulator.confusion.detach().clone()
+            mplus_brier_sum = accumulator.mplus_brier_sum.detach().clone()
+            sample_count = accumulator.sample_count.detach().clone()
+        else:
+            confusion, mplus_brier_sum, sample_count = accumulator.synchronized(
+                device=self.device
+            )
         values = self._epoch_metric_values(
             confusion, mplus_brier_sum, sample_count
         )
@@ -667,11 +677,10 @@ class DeepSWM(pl.LightningModule):
                 on_step=False,
                 on_epoch=True,
                 prog_bar=False,
-                # Values were already computed from globally gathered
-                # sufficient statistics. Synchronizing the identical scalars
-                # keeps Lightning's callback_metrics contract explicit for
-                # distributed ModelCheckpoint callbacks.
-                sync_dist=True,
+                # Global validation/test values are already identical on every
+                # rank, while train values intentionally retain the pre-DDP-fix
+                # rank-local behavior. Neither path needs another reduction.
+                sync_dist=False,
             )
         accumulator.reset()
 

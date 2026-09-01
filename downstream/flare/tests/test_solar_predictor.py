@@ -230,6 +230,16 @@ class SolarPredictorTests(unittest.TestCase):
         self.assertFalse(any("0094" in key for key in state_keys))
         self.assertIn("contrastive_projector", state_keys)
 
+    def test_only_train_confusion_disables_distributed_compute(self) -> None:
+        config = cnn_config()
+        checkpoint = self.root / "confusion-sync.ckpt"
+        write_solar_checkpoint(checkpoint, config)
+        model = self.make_predictor(config, checkpoint)
+
+        self.assertFalse(model.train_confusion.sync_on_compute)
+        self.assertTrue(model.val_confusion.sync_on_compute)
+        self.assertTrue(model.test_confusion.sync_on_compute)
+
     def test_vit_uses_raw_cls_main_feature_and_contrastive_residual(self) -> None:
         config = vit_config()
         checkpoint = self.root / "vit.ckpt"

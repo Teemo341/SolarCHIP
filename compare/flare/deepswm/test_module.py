@@ -228,3 +228,35 @@ def test_epoch_metrics_are_computed_from_summed_statistics(monkeypatch) -> None:
     climatology = model.training_class_probabilities[2:].sum().to(torch.float64)
     expected_bss = 1.0 - (0.75 / 9.0) / (climatology * (1.0 - climatology))
     torch.testing.assert_close(metrics["bss_mplus"], expected_bss)
+
+
+def test_train_epoch_metrics_do_not_call_distributed_synchronization(
+    monkeypatch,
+) -> None:
+    model = _make_module(monkeypatch, class_weight_mode="none")
+    accumulator = SplitAccumulator()
+    accumulator.confusion[0, 0] = 2
+    accumulator.mplus_brier_sum.fill_(0.25)
+    accumulator.sample_count.fill_(2)
+
+    def unexpected_synchronization(device=None):
+        del device
+        raise AssertionError("train epoch metrics must remain rank-local")
+
+    logged: dict[str, object] = {}
+
+    def capture_log_dict(values, **kwargs) -> None:
+        logged["values"] = values
+        logged["kwargs"] = kwargs
+
+    monkeypatch.setattr(accumulator, "synchronized", unexpected_synchronization)
+    monkeypatch.setattr(model, "log_dict", capture_log_dict)
+
+    model._log_epoch_metrics("train", accumulator)
+
+    torch.testing.assert_close(
+        model.last_confusion_matrices["train"],
+        torch.diag(torch.tensor([2, 0, 0, 0], dtype=torch.long)),
+    )
+    assert logged["kwargs"]["sync_dist"] is False
+    torch.testing.assert_close(accumulator.sample_count, torch.tensor(0))
