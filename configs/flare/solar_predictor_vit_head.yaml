@@ -87,16 +87,16 @@ lightning:
     early_stop:
       target: pytorch_lightning.callbacks.EarlyStopping
       params:
-        monitor: val_macro_f1
+        monitor: val_selection_score
         mode: max
         patience: 50
         check_finite: true
 
   modelcheckpoint:
     params:
-      monitor: val_macro_f1
+      monitor: val_selection_score
       mode: max
-      filename: '{epoch:06}-{val_macro_f1:.4f}'
+      filename: '{epoch:06}-{val_selection_score:.4f}'
       save_top_k: 1
       save_last: true
       every_n_epochs: 1
