@@ -1,7 +1,9 @@
 model:
   target: compare.flare.deepswm.module.DeepSWM
   params:
-    window_length: 14
+    # Clean loss ablation: preserve the k=1 architecture and training schedule,
+    # but optimize a plain, unweighted four-class cross-entropy only.
+    window_length: 1
     image_size: 256
     learning_rate: 4.0e-5
     weight_decay: 0.05
@@ -10,8 +12,9 @@ model:
     stage2_epochs: 15
     max_epochs: 35
     ce_weight: 1.0
-    gmgs_weight: 1.0
-    bss_weight: 2.0
+    gmgs_weight: 0.0
+    bss_weight: 0.0
+    class_weight_mode: none
     dim: 64
     sequence_length: 128
     sparse_embed_dim: 128
@@ -29,9 +32,9 @@ model:
 data:
   target: data.build.DataModuleFromConfig
   params:
-    # One fourteen-day window is the smallest possible micro-batch;
-    # accumulation preserves effective batch size 32.
-    batch_size: 1
+    # Lightning interprets this as per-device batch size. Four devices and no
+    # gradient accumulation give global effective batch size 8 * 4 = 32.
+    batch_size: 8
     num_workers: 8
     wrap: false
     shuffle_val_dataloader: false
@@ -39,7 +42,7 @@ data:
       target: compare.flare.deepswm.dataset.DeepSWMSequenceDataset
       params:
         modal_list: [hmi]
-        window_length: 14
+        window_length: 1
         enhance_type: [log1p, zscore]
         load_imgs: false
         torch_augment_type: [1024, 0.0, 0]
@@ -52,7 +55,7 @@ data:
       target: compare.flare.deepswm.dataset.DeepSWMSequenceDataset
       params:
         modal_list: [hmi]
-        window_length: 14
+        window_length: 1
         enhance_type: [log1p, zscore]
         load_imgs: false
         torch_augment_type: [1024, 0.0, 0]
@@ -60,6 +63,7 @@ data:
         time_step: 1
         label_path: downstream/flare/data/flare_daily_labels.csv
         expected_event_time_column: start_time
+        return_date_id: true
         class_groups: [0AB, C, M, X]
 
 lightning:
@@ -71,15 +75,18 @@ lightning:
     params:
       monitor: val_macro_f1
       mode: max
-      filename: '{epoch:06}'
+      filename: 'macro-f1-{epoch:06}-{val_macro_f1:.4f}'
       save_top_k: 1
       every_n_epochs: 1
       save_weights_only: false
+      save_on_train_epoch_end: false
+      auto_insert_metric_name: false
   trainer:
-    devices: [2]
+    devices: [0, 1, 2, 3]
+    strategy: ddp_find_unused_parameters_true
     max_epochs: 35
     precision: 32-true
-    accumulate_grad_batches: 32
+    accumulate_grad_batches: 1
     deterministic: true
     benchmark: false
     log_every_n_steps: 10

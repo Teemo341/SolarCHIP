@@ -7,7 +7,6 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import torch
-from torch import nn
 import torch.nn.functional as F
 
 try:
@@ -84,19 +83,35 @@ def gerrity_score_matrix(class_probabilities: torch.Tensor) -> torch.Tensor:
     return score.to(torch.float32)
 
 
-class SplitAccumulator(nn.Module):
-    """Small dependency-free epoch accumulator for the requested metrics."""
+class SplitAccumulator:
+    """Rank-local sufficient statistics with explicit epoch-end reduction.
+
+    These tensors deliberately are not registered module buffers. PyTorch DDP
+    may broadcast registered buffers before forward calls, which would corrupt
+    rank-local running statistics before their final SUM reduction.
+    """
 
     def __init__(self) -> None:
-        super().__init__()
-        self.register_buffer(
-            "confusion", torch.zeros(NUM_CLASSES, NUM_CLASSES, dtype=torch.long)
-        )
-        self.register_buffer("mplus_brier_sum", torch.zeros((), dtype=torch.float64))
-        self.register_buffer("sample_count", torch.zeros((), dtype=torch.long))
+        self.confusion = torch.zeros(NUM_CLASSES, NUM_CLASSES, dtype=torch.long)
+        self.mplus_brier_sum = torch.zeros((), dtype=torch.float64)
+        self.sample_count = torch.zeros((), dtype=torch.long)
+        self.records: list[tuple[int, int, tuple[float, ...]]] = []
+
+    def _move_to(self, device: torch.device) -> None:
+        if self.confusion.device == device:
+            return
+        self.confusion = self.confusion.to(device)
+        self.mplus_brier_sum = self.mplus_brier_sum.to(device)
+        self.sample_count = self.sample_count.to(device)
 
     @torch.no_grad()
-    def update(self, logits: torch.Tensor, labels: torch.Tensor) -> None:
+    def update(
+        self,
+        logits: torch.Tensor,
+        labels: torch.Tensor,
+        date_ids: torch.Tensor | None = None,
+    ) -> None:
+        self._move_to(labels.device)
         probabilities = logits.float().softmax(dim=-1)
         predictions = probabilities.argmax(dim=-1)
         encoded = labels * NUM_CLASSES + predictions
@@ -111,12 +126,104 @@ class SplitAccumulator(nn.Module):
             (event_probability - event_target).square().sum().to(torch.float64)
         )
         self.sample_count.add_(labels.numel())
+        if date_ids is not None:
+            flat_date_ids = date_ids.reshape(-1)
+            if flat_date_ids.numel() != labels.numel():
+                raise ValueError(
+                    "date_id count must match labels for distributed metric "
+                    f"deduplication, got {flat_date_ids.numel()} and {labels.numel()}"
+                )
+            self.records.extend(
+                (
+                    int(date_id),
+                    int(label),
+                    tuple(float(value) for value in probability),
+                )
+                for date_id, label, probability in zip(
+                    flat_date_ids.detach().cpu().tolist(),
+                    labels.detach().cpu().tolist(),
+                    probabilities.detach().cpu().tolist(),
+                )
+            )
+
+    @staticmethod
+    def _statistics_from_unique_records(
+        records: Sequence[tuple[int, int, tuple[float, ...]]],
+        device: torch.device,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        grouped: dict[int, tuple[int, list[tuple[float, ...]]]] = {}
+        for date_id, label, probabilities in records:
+            if len(probabilities) != NUM_CLASSES:
+                raise ValueError(
+                    f"expected {NUM_CLASSES} probabilities, got {len(probabilities)}"
+                )
+            if date_id in grouped:
+                existing_label, values = grouped[date_id]
+                if existing_label != label:
+                    raise RuntimeError(
+                        f"date_id {date_id} has conflicting labels "
+                        f"{existing_label} and {label}"
+                    )
+                values.append(probabilities)
+            else:
+                grouped[date_id] = (label, [probabilities])
+
+        confusion = torch.zeros(
+            NUM_CLASSES, NUM_CLASSES, dtype=torch.long, device=device
+        )
+        mplus_brier_sum = torch.zeros((), dtype=torch.float64, device=device)
+        for label, probability_rows in grouped.values():
+            mean_probability = torch.tensor(
+                probability_rows, dtype=torch.float64, device=device
+            ).mean(dim=0)
+            prediction = int(mean_probability.argmax())
+            confusion[label, prediction] += 1
+            event_probability = mean_probability[2:].sum()
+            event_target = float(label >= 2)
+            mplus_brier_sum += (event_probability - event_target).square()
+        sample_count = torch.tensor(len(grouped), dtype=torch.long, device=device)
+        return confusion, mplus_brier_sum, sample_count
+
+    @torch.no_grad()
+    def synchronized(
+        self, device: torch.device | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return global sufficient statistics without mutating local state."""
+
+        if device is not None:
+            self._move_to(device)
+        if self.records:
+            records = list(self.records)
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                gathered: list[
+                    list[tuple[int, int, tuple[float, ...]]] | None
+                ] = [None] * torch.distributed.get_world_size()
+                torch.distributed.all_gather_object(gathered, records)
+                records = [
+                    record
+                    for rank_records in gathered
+                    if rank_records is not None
+                    for record in rank_records
+                ]
+            return self._statistics_from_unique_records(
+                records, device=self.confusion.device
+            )
+        confusion = self.confusion.detach().clone()
+        mplus_brier_sum = self.mplus_brier_sum.detach().clone()
+        sample_count = self.sample_count.detach().clone()
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            for statistic in (confusion, mplus_brier_sum, sample_count):
+                torch.distributed.all_reduce(
+                    statistic, op=torch.distributed.ReduceOp.SUM
+                )
+        return confusion, mplus_brier_sum, sample_count
 
     @torch.no_grad()
     def reset(self) -> None:
         self.confusion.zero_()
         self.mplus_brier_sum.zero_()
         self.sample_count.zero_()
+        self.records.clear()
 
 
 class DeepSWM(pl.LightningModule):
@@ -124,9 +231,9 @@ class DeepSWM(pl.LightningModule):
 
     Stage 1 jointly trains every branch for 20 epochs. At epoch 20, stage 2
     freezes SSE, the encoder-only SparseMAE branch, LT-SSM and mixing SSM, and
-    trains only the classification head for 15 further epochs. All three
-    per-sample loss components use weights calculated exclusively from the
-    attached training dataset's class counts.
+    trains only the classification head for 15 further epochs. Loss components
+    can use inverse-frequency weights calculated exclusively from the attached
+    training split, or unit weights for a true unweighted loss ablation.
     """
 
     def __init__(
@@ -142,6 +249,7 @@ class DeepSWM(pl.LightningModule):
         ce_weight: float = 1.0,
         gmgs_weight: float = 1.0,
         bss_weight: float = 2.0,
+        class_weight_mode: str = "inverse_frequency",
         train_class_counts: Sequence[int] | Mapping[int, int] | None = None,
         dim: int = 64,
         sequence_length: int = 128,
@@ -171,6 +279,12 @@ class DeepSWM(pl.LightningModule):
         }.items():
             if value < 0:
                 raise ValueError(f"{name} must be non-negative")
+        class_weight_mode = str(class_weight_mode).strip().lower()
+        if class_weight_mode not in {"none", "inverse_frequency"}:
+            raise ValueError(
+                "class_weight_mode must be 'none' or 'inverse_frequency', got "
+                f"{class_weight_mode!r}"
+            )
 
         expected_epochs = stage1_epochs + stage2_epochs
         if max_epochs is not None and int(max_epochs) != expected_epochs:
@@ -231,7 +345,10 @@ class DeepSWM(pl.LightningModule):
         count_tensor = torch.as_tensor(
             ordered, dtype=torch.float32, device=self.training_class_counts.device
         )
-        weights = inverse_frequency_weights(count_tensor).to(count_tensor.device)
+        if self.hparams.class_weight_mode == "none":
+            weights = torch.ones_like(count_tensor)
+        else:
+            weights = inverse_frequency_weights(count_tensor).to(count_tensor.device)
         probabilities = count_tensor / count_tensor.sum()
         score_matrix = gerrity_score_matrix(probabilities).to(count_tensor.device)
 
@@ -286,6 +403,17 @@ class DeepSWM(pl.LightningModule):
             self.network.freeze_feature_extractor()
         else:
             self.network.unfreeze_feature_extractor()
+
+    def on_load_checkpoint(self, checkpoint: Mapping[str, Any]) -> None:
+        """Discard legacy running-metric buffers from pre-DDP-fix checkpoints."""
+
+        state_dict = checkpoint.get("state_dict")
+        if not isinstance(state_dict, Mapping):
+            return
+        metric_prefixes = ("train_metrics.", "val_metrics.", "test_metrics.")
+        for key in list(state_dict):
+            if key.startswith(metric_prefixes):
+                del state_dict[key]
 
     def train(self, mode: bool = True):
         super().train(mode)
@@ -447,7 +575,7 @@ class DeepSWM(pl.LightningModule):
     ) -> torch.Tensor:
         del batch_idx
         loss, logits, labels, components = self._shared_step(batch)
-        self.val_metrics.update(logits, labels)
+        self.val_metrics.update(logits, labels, batch.get("date_id"))
         self._log_losses("val", loss, components, labels.numel(), on_step=False)
         return loss
 
@@ -456,7 +584,7 @@ class DeepSWM(pl.LightningModule):
     ) -> torch.Tensor:
         del batch_idx
         loss, logits, labels, components = self._shared_step(batch)
-        self.test_metrics.update(logits, labels)
+        self.test_metrics.update(logits, labels, batch.get("date_id"))
         self._log_losses("test", loss, components, labels.numel(), on_step=False)
         return loss
 
@@ -478,8 +606,13 @@ class DeepSWM(pl.LightningModule):
         return output
 
     @torch.no_grad()
-    def _epoch_metric_values(self, accumulator: SplitAccumulator) -> dict[str, torch.Tensor]:
-        confusion = accumulator.confusion.to(torch.float64)
+    def _epoch_metric_values(
+        self,
+        confusion: torch.Tensor,
+        mplus_brier_sum: torch.Tensor,
+        sample_count: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        confusion = confusion.to(torch.float64)
         total = confusion.sum()
         if total <= 0:
             return {}
@@ -498,7 +631,7 @@ class DeepSWM(pl.LightningModule):
 
         event_climatology = self.training_class_probabilities[2:].sum().to(torch.float64)
         climatology_brier = event_climatology * (1.0 - event_climatology)
-        mean_brier = accumulator.mplus_brier_sum / accumulator.sample_count.clamp_min(1)
+        mean_brier = mplus_brier_sum / sample_count.clamp_min(1)
         bss_mplus = 1.0 - mean_brier / climatology_brier.clamp_min(1e-12)
         # GMGS evaluation constructs S from the observed marginal of the
         # contingency table (paper Eq. 12--16 and the official metric code).
@@ -521,15 +654,24 @@ class DeepSWM(pl.LightningModule):
         }
 
     def _log_epoch_metrics(self, split: str, accumulator: SplitAccumulator) -> None:
-        values = self._epoch_metric_values(accumulator)
-        self.last_confusion_matrices[split] = accumulator.confusion.detach().cpu().clone()
+        confusion, mplus_brier_sum, sample_count = accumulator.synchronized(
+            device=self.device
+        )
+        values = self._epoch_metric_values(
+            confusion, mplus_brier_sum, sample_count
+        )
+        self.last_confusion_matrices[split] = confusion.cpu()
         if values:
             self.log_dict(
                 {f"{split}_{name}": value for name, value in values.items()},
                 on_step=False,
                 on_epoch=True,
                 prog_bar=False,
-                sync_dist=False,
+                # Values were already computed from globally gathered
+                # sufficient statistics. Synchronizing the identical scalars
+                # keeps Lightning's callback_metrics contract explicit for
+                # distributed ModelCheckpoint callbacks.
+                sync_dist=True,
             )
         accumulator.reset()
 
@@ -553,6 +695,7 @@ class DeepSWM(pl.LightningModule):
 
 __all__ = [
     "DeepSWM",
+    "SplitAccumulator",
     "gerrity_score_matrix",
     "inverse_frequency_weights",
 ]
