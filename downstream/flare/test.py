@@ -408,12 +408,23 @@ def evaluation_time_metadata(
 
     params = split_config.get("params", {})
     raw_interval = params.get("time_interval")
+    if raw_interval is None:
+        # FlareDatasetUni resolves its default to the complete label-table
+        # coverage. Constructor defaults are not materialized in the logged
+        # OmegaConf, so read the resolved value from the dataset when needed.
+        raw_interval = _dataset_attribute(dataset, "time_interval")
     if raw_interval is None or len(raw_interval) != 2:
-        raise ValueError("Evaluation dataset config must define time_interval")
+        raise ValueError(
+            "Evaluation dataset config or dataset instance must define "
+            "time_interval"
+        )
     start_id, end_id = (int(raw_interval[0]), int(raw_interval[1]))
     if start_id >= end_id:
         raise ValueError("Evaluation time_interval must satisfy START < END")
-    time_step = int(params.get("time_step", 1))
+    raw_time_step = params.get("time_step")
+    if raw_time_step is None:
+        raw_time_step = _dataset_attribute(dataset, "time_step")
+    time_step = 1 if raw_time_step is None else int(raw_time_step)
     if time_step < 1:
         raise ValueError("Evaluation time_step must be positive")
 

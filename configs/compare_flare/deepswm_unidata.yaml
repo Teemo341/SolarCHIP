@@ -1,0 +1,111 @@
+model:
+  target: compare.flare.deepswm.module.DeepSWM
+  params:
+    # Keep the existing k=1 protocol. DeepSWM accepts the single-image batches
+    # returned by FlareDatasetUni and inserts the length-one time dimension.
+    window_length: 1
+    image_size: 256
+    learning_rate: 4.0e-5
+    weight_decay: 0.05
+    adam_betas: [0.9, 0.95]
+    stage1_epochs: 20
+    stage2_epochs: 15
+    max_epochs: 35
+    ce_weight: 1.0
+    gmgs_weight: 0.0
+    bss_weight: 0.0
+    class_weight_mode: none
+    dim: 64
+    sequence_length: 128
+    sparse_embed_dim: 128
+    sparse_depth: 8
+    sparse_patch_size: 8
+    lt_depth: 1
+    mixing_depth: 1
+    sse_dropout: 0.6
+    dcsm_dropout: 0.6
+    stssm_dropout: 0.6
+    ltssm_dropout: 0.6
+    mixing_dropout: 0.6
+    head_dropout: 0.7
+
+data:
+  target: data.build.DataModuleFromConfig
+  params:
+    # Lightning interprets this as per-device batch size. Four devices and no
+    # gradient accumulation give global effective batch size 8 * 4 = 32.
+    batch_size: 8
+    num_workers: 8
+    wrap: false
+    shuffle_val_dataloader: false
+    train:
+      target: downstream.flare.data.dataset_uni.FlareDatasetUni
+      params:
+        split: train
+        validation_ratio: 0.2
+        modal_list: [hmi]
+        enhance_type: [log1p, zscore]
+        load_imgs: false
+        torch_augment_type: [1024, 0.0, 0]
+        time_interval: [0, 6000]
+        time_step: 1
+        label_path: downstream/flare/data/flare_daily_labels.csv
+        expected_event_time_column: start_time
+        class_groups: [0AB, C, M, X]
+    validation:
+      target: downstream.flare.data.dataset_uni.FlareDatasetUni
+      params:
+        split: validation
+        validation_ratio: 0.2
+        modal_list: [hmi]
+        enhance_type: [log1p, zscore]
+        load_imgs: false
+        torch_augment_type: [1024, 0.0, 0]
+        time_interval: [0, 6000]
+        time_step: 1
+        label_path: downstream/flare/data/flare_daily_labels.csv
+        expected_event_time_column: start_time
+        return_date_id: true
+        class_groups: [0AB, C, M, X]
+    test:
+      target: downstream.flare.data.dataset_uni.FlareDatasetUni
+      params:
+        split: test
+        validation_ratio: 0.2
+        modal_list: [hmi]
+        enhance_type: [log1p, zscore]
+        load_imgs: false
+        torch_augment_type: [1024, 0.0, 0]
+        time_interval: [0, 6000]
+        time_step: 1
+        label_path: downstream/flare/data/flare_daily_labels.csv
+        expected_event_time_column: start_time
+        return_date_id: true
+        class_groups: [0AB, C, M, X]
+
+lightning:
+  callbacks:
+    image_logger:
+      params:
+        disabled: true
+  modelcheckpoint:
+    params:
+      monitor: val_macro_f1
+      mode: max
+      filename: 'macro-f1-{epoch:06}-{val_macro_f1:.4f}'
+      save_top_k: 1
+      every_n_epochs: 1
+      save_weights_only: false
+      save_on_train_epoch_end: false
+      auto_insert_metric_name: false
+  trainer:
+    devices: [2, 3]
+    strategy: ddp_find_unused_parameters_true
+    max_epochs: 35
+    precision: 32-true
+    accumulate_grad_batches: 1
+    deterministic: true
+    benchmark: false
+    log_every_n_steps: 10
+    num_sanity_val_steps: 2
+    check_val_every_n_epoch: 1

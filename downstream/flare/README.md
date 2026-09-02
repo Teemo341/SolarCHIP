@@ -131,6 +131,34 @@ validation:
 
 请从仓库根目录启动训练，因为父类的模态索引路径是相对路径。也不要调用根项目的 `data.utils.transfer_date_to_id()` 来生成本任务 ID：该 helper 当前把日差额外乘了 1440；本转换器直接使用 `(date - 2010-05-01).days`，与 `self.exist_idx` 的日 ID 契约一致。
 
+### 等间隔统一划分
+
+`data/dataset_uni.py` 中的 `FlareDatasetUni` 先调用 `FlareDataset` 得到完整的 HMI 与标签交集，再按时间顺序划分训练集和留出集。`validation_ratio` 控制留出比例，默认 `0.2`；算法把完整序列分成等宽时间段并抽取每段中心附近的一个样本，完全不读取 Python、NumPy 或 PyTorch 的随机状态。`train` 使用这些样本的严格补集，因此不同训练 seed 对应的日期集合一致且没有 train/validation 重叠。
+
+训练和验证配置必须使用相同的 `time_interval`、`time_step`、`modal_list`、标签配置和 `validation_ratio`，并显式设置不同的 `split`：
+
+```yaml
+train:
+  target: downstream.flare.data.dataset_uni.FlareDatasetUni
+  params:
+    split: train
+    validation_ratio: 0.2
+    modal_list: ['hmi']
+    time_interval: [0, 6000]
+
+validation:
+  target: downstream.flare.data.dataset_uni.FlareDatasetUni
+  params:
+    split: validation
+    validation_ratio: 0.2
+    modal_list: ['hmi']
+    time_interval: [0, 6000]
+```
+
+完整 DataModule 示例见 `config_example_uni.yaml`。`split: val` 是 `validation` 的简写；示例中的 `test` 段使用 `split: test` 读取同一个留出集，因此默认的 `downstream/flare/test.py` 和显式 `--split test` 都可用。训练日志无需额外保存索引文件即可复现完全相同的测试日期。若在测试命令中传入 `--time_interval` 或 `--time_step`，它们会改变完整候选池并据此重新等间隔划分。
+
+在当前 `[0, 6000)` HMI/标签数据上，完整交集为 5,908 天；默认比例得到 4,726 个训练样本和 1,182 个验证样本。默认四分类计数分别为 train `{0AB: 1826, C: 1854, M: 930, X: 116}`、validation `{0AB: 458, C: 453, M: 236, X: 35}`。等间隔划分用于让两个集合共同覆盖整个时间范围，并不等同于按类别标签做分层抽样。
+
 ## SolarPredictor 分类模型
 
 `SolarPredictor.py` 从 SolarCHIP checkpoint 中严格提取 HMI 分支，不在最终模型中注册非 HMI 模态或任何 decoder。checkpoint 可以是 Lightning 的 `{"state_dict": ...}` 或纯 Tensor state dict；HMI encoder、CNN `cls_proj` 和 contrastive projector 都要求键名及 shape 严格匹配，避免错误配置被随机初始化。
@@ -218,11 +246,13 @@ python3 -m unittest \
 python3 -m py_compile \
   downstream/flare/data/download_goes_flare_report.py \
   downstream/flare/data/prepare_flare_labels.py \
-  downstream/flare/data/dataset.py
+  downstream/flare/data/dataset.py \
+  downstream/flare/data/dataset_uni.py
 
 # 模型测试需要先激活项目的 solargpt/PyTorch 环境。
 python -m unittest \
   downstream.flare.tests.test_flare_dataset \
+  downstream.flare.tests.test_flare_dataset_uni \
   downstream.flare.tests.test_solar_predictor \
   downstream.flare.tests.test_flare_test
 ```

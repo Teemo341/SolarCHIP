@@ -1,0 +1,56 @@
+# Deterministic uniform split over one shared HMI + label pool.
+# train and validation must keep the same pool-defining parameters; only
+# ``split`` and image augmentation should differ.
+data:
+  target: data.build.DataModuleFromConfig
+  params:
+    batch_size: 5
+    num_workers: 8
+    wrap: false
+    shuffle_val_dataloader: false
+    # Keep custom_collate_fn unset: it would silently discard label/date_id.
+    train:
+      target: downstream.flare.data.dataset_uni.FlareDatasetUni
+      params:
+        split: train
+        validation_ratio: 0.2
+        modal_list: ['hmi']
+        enhance_type: ['log1p', 'zscore']
+        load_imgs: false
+        torch_augment_type: [1024, 0.5, 360]
+        time_interval: [0, 6000]
+        time_step: 1
+        label_path: downstream/flare/data/flare_daily_labels.csv
+        expected_event_time_column: start_time
+        class_groups: ['0AB', 'C', 'M', 'X']
+    validation:
+      target: downstream.flare.data.dataset_uni.FlareDatasetUni
+      params:
+        # downstream.flare.test reads this logged split by default.
+        split: validation
+        validation_ratio: 0.2
+        modal_list: ['hmi']
+        enhance_type: ['log1p', 'zscore']
+        load_imgs: false
+        torch_augment_type: [1024, 0.0, 0]
+        time_interval: [0, 6000]
+        time_step: 1
+        label_path: downstream/flare/data/flare_daily_labels.csv
+        expected_event_time_column: start_time
+        class_groups: ['0AB', 'C', 'M', 'X']
+    test:
+      target: downstream.flare.data.dataset_uni.FlareDatasetUni
+      params:
+        # Optional: enables downstream.flare.test --split test explicitly.
+        # It intentionally resolves to the same held-out IDs as validation.
+        split: test
+        validation_ratio: 0.2
+        modal_list: ['hmi']
+        enhance_type: ['log1p', 'zscore']
+        load_imgs: false
+        torch_augment_type: [1024, 0.0, 0]
+        time_interval: [0, 6000]
+        time_step: 1
+        label_path: downstream/flare/data/flare_daily_labels.csv
+        expected_event_time_column: start_time
+        class_groups: ['0AB', 'C', 'M', 'X']
