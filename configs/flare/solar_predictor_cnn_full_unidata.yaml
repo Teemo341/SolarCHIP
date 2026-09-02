@@ -51,7 +51,7 @@ model:
 data:
   target: data.build.DataModuleFromConfig
   params:
-    batch_size: 16
+    batch_size: 8
     num_workers: 8
     wrap: false
     shuffle_val_dataloader: false
