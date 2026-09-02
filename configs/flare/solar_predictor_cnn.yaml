@@ -47,7 +47,7 @@ model:
     train_backbone: true
     freeze_encoder_epochs: 5
     scheduler: cosine
-    max_epochs: 200
+    max_epochs: 100
     min_learning_rate: 0.0
 
 data:
@@ -108,7 +108,7 @@ lightning:
 
   trainer:
     devices: [0]
-    max_epochs: 200
+    max_epochs: 100
     precision: bf16-mixed
     deterministic: true
     benchmark: false
