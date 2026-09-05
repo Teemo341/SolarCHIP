@@ -138,7 +138,7 @@ class SolarPredictorTests(unittest.TestCase):
     def make_predictor(
         self,
         config: dict,
-        checkpoint: Path,
+        checkpoint: Path | None,
         **overrides,
     ) -> SolarPredictor:
         params = {
@@ -155,6 +155,35 @@ class SolarPredictorTests(unittest.TestCase):
         }
         params.update(overrides)
         return SolarPredictor(**params)
+
+    def test_null_checkpoint_explicitly_trains_from_scratch(self) -> None:
+        for backbone, config in (("cnn", cnn_config()), ("vit", vit_config())):
+            with self.subTest(backbone=backbone):
+                model = self.make_predictor(config, None)
+                self.assertIsNone(model.hparams["pretrained_ckpt_path"])
+
+                logits = model(torch.randn(2, 1, 16, 16))
+                self.assertEqual(tuple(logits.shape), (2, len(DEFAULT_CLASS_GROUPS)))
+
+        model = self.make_predictor(cnn_config(), None)
+
+        trainer = pl.Trainer(
+            accelerator="cpu",
+            devices=1,
+            max_epochs=1,
+            limit_train_batches=1,
+            limit_val_batches=0,
+            logger=False,
+            enable_checkpointing=False,
+            enable_model_summary=False,
+        )
+        trainer.fit(
+            model,
+            train_dataloaders=DataLoader(
+                SyntheticFlareDataset(length=2), batch_size=2
+            ),
+        )
+        self.assertEqual(trainer.global_step, 1)
 
     def test_shipped_yaml_uses_one_class_group_contract(self) -> None:
         config = OmegaConf.load("downstream/flare/solar_predictor_cnn.yaml")
@@ -210,6 +239,25 @@ class SolarPredictorTests(unittest.TestCase):
                 config.lightning.modelcheckpoint.params.filename,
                 "{epoch:06}-{val_macro_f1:.4f}",
             )
+
+    def test_scratch_configs_only_disable_pretrained_loading(self) -> None:
+        for backbone in ("cnn", "vit"):
+            with self.subTest(backbone=backbone):
+                full = OmegaConf.load(
+                    f"configs/flare/solar_predictor_{backbone}_full.yaml"
+                )
+                scratch = OmegaConf.load(
+                    f"configs/flare/solar_predictor_{backbone}_scratch.yaml"
+                )
+                self.assertIsNone(scratch.model.params.pretrained_ckpt_path)
+
+                scratch.model.params.pretrained_ckpt_path = (
+                    full.model.params.pretrained_ckpt_path
+                )
+                self.assertEqual(
+                    OmegaConf.to_container(scratch, resolve=True),
+                    OmegaConf.to_container(full, resolve=True),
+                )
 
     def test_cnn_forward_keeps_only_hmi_encoder_mapper_and_head(self) -> None:
         config = cnn_config()

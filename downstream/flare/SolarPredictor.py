@@ -1,4 +1,4 @@
-"""Lightning classifier built from a pretrained SolarCHIP HMI encoder."""
+"""Lightning classifier built from a SolarCHIP HMI encoder."""
 
 from __future__ import annotations
 
@@ -206,22 +206,25 @@ def _select_checkpoint_layout(
 
 
 class SolarPredictor(pl.LightningModule):
-    """Classify daily flares using only the pretrained SolarCHIP HMI branch.
+    """Classify daily flares using only the SolarCHIP HMI branch.
+
+    The branch is loaded from a pretraining checkpoint when one is configured,
+    or randomly initialized when ``pretrained_ckpt_path`` is explicitly ``None``.
 
     The backbone-specific main mapping produces a 256-dimensional feature:
 
     * CNN: spatial encoder output -> independent attention pooling.
     * ViT: raw encoder CLS token -> learned linear mapping.
 
-    An optional pretrained SolarCHIP contrastive global feature is mapped to the
-    same width and added through a learnable residual gate. No decoder or
-    non-HMI modality is registered in the final model.
+    An optional SolarCHIP contrastive global feature is mapped to the same width
+    and added through a learnable residual gate. No decoder or non-HMI modality
+    is registered in the final model.
     """
 
     def __init__(
         self,
         base_model: Mapping[str, Any],
-        pretrained_ckpt_path: str | Path,
+        pretrained_ckpt_path: str | Path | None,
         class_groups: Sequence[str] | None = DEFAULT_CLASS_GROUPS,
         representation_dim: int = 256,
         head_hidden_dim: int = 256,
@@ -276,11 +279,15 @@ class SolarPredictor(pl.LightningModule):
         params = resolved_base_model.setdefault("params", {})
         if not isinstance(params, dict):
             raise TypeError("base_model.params must be a mapping")
-        # The outer SolarCHIP checkpoint is loaded below with an explicit prefix.
-        # Prevent the inner AE constructor from trying to load it a second time.
+        # An outer SolarCHIP checkpoint, when configured, is loaded below with an
+        # explicit prefix. Prevent the inner AE constructor from loading it too.
         params["ckpt_path"] = None
 
-        checkpoint_path = Path(pretrained_ckpt_path).expanduser().resolve()
+        checkpoint_path = (
+            None
+            if pretrained_ckpt_path is None
+            else Path(pretrained_ckpt_path).expanduser().resolve()
+        )
         pretrained_ae = instantiate_from_config(resolved_base_model)
         if isinstance(pretrained_ae, AE_CNN):
             self.backbone_kind = "cnn"
@@ -300,7 +307,10 @@ class SolarPredictor(pl.LightningModule):
         checkpoint_state: dict[str, torch.Tensor] | None = None
         layout: str | None = None
         root: str | None = None
-        self._pretrained_weights_loaded = checkpoint_path.is_file()
+        self._initialized_from_scratch = checkpoint_path is None
+        self._pretrained_weights_loaded = (
+            checkpoint_path is not None and checkpoint_path.is_file()
+        )
         self._restored_from_downstream_checkpoint = False
         if self._pretrained_weights_loaded:
             checkpoint_state = _load_tensor_state_dict(checkpoint_path)
@@ -392,9 +402,9 @@ class SolarPredictor(pl.LightningModule):
                     )
                 projector = checkpoint_state[projector_key]
             else:
-                # This random value is only an architecture placeholder. Direct
-                # use is blocked below; a downstream Lightning checkpoint must
-                # restore the actual learned tensor before forward/training.
+                # Explicit scratch runs use the AE's random initialization. For a
+                # missing non-null path, forward remains blocked unless a complete
+                # downstream Lightning checkpoint restores the learned tensor.
                 projector = pretrained_ae.contrasive_porject.detach().clone()
             expected_projector_shape = tuple(pretrained_ae.contrasive_porject.shape)
             if tuple(projector.shape) != expected_projector_shape:
@@ -481,7 +491,9 @@ class SolarPredictor(pl.LightningModule):
         self.save_hyperparameters(
             {
                 "base_model": resolved_base_model,
-                "pretrained_ckpt_path": str(checkpoint_path),
+                "pretrained_ckpt_path": None
+                if checkpoint_path is None
+                else str(checkpoint_path),
                 "class_groups": list(self.class_groups),
                 "representation_dim": representation_dim,
                 "head_hidden_dim": head_hidden_dim,
@@ -514,7 +526,9 @@ class SolarPredictor(pl.LightningModule):
 
     def _weights_are_available(self) -> bool:
         return (
-            self._pretrained_weights_loaded or self._restored_from_downstream_checkpoint
+            self._initialized_from_scratch
+            or self._pretrained_weights_loaded
+            or self._restored_from_downstream_checkpoint
         )
 
     def _require_weights(self) -> None:
