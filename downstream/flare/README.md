@@ -159,6 +159,36 @@ validation:
 
 在当前 `[0, 6000)` HMI/标签数据上，完整交集为 5,908 天；默认比例得到 4,726 个训练样本和 1,182 个验证样本。默认四分类计数分别为 train `{0AB: 1826, C: 1854, M: 930, X: 116}`、validation `{0AB: 458, C: 453, M: 236, X: 35}`。等间隔划分用于让两个集合共同覆盖整个时间范围，并不等同于按类别标签做分层抽样。
 
+### 泛化实验的训练比例子集
+
+`data/dataset_split.py` 中的 `FlareDatasetSplit` 继承 `FlareDatasetUni`，先固定上述完整训练/验证划分，再只从原训练补集中抽取 `train_ratio` 指定的比例。它只接受 `split: train`；验证配置继续直接使用 `FlareDatasetUni(split='validation')`，所以改变训练比例不会改变任何验证日期。
+
+若原训练集有 `N` 个样本，抽样数为 `floor(N * train_ratio + 0.5)`，并限制为至少一个样本；算法按已有训练样本的时间顺序划分等宽区间，取每个区间的中心位置，不使用随机状态。当前 4,726 个原训练样本在 10%–90% 下依次得到 `473, 945, 1418, 1890, 2363, 2836, 3308, 3781, 4253` 个样本。各比例分别独立做等间隔抽样，因此不保证 10% 集合一定包含于 20% 集合；这也不是按耀发类别分层抽样。
+
+完整的 CNN/ViT 泛化实验配置位于 `configs/flare_split/`，可以像普通配置一样单独训练：
+
+```bash
+python -m solarchip.main.train \
+  -b configs/flare_split/solar_predictor_cnn_ratio10.yaml
+```
+
+单独配置数据集时，只在训练段使用新类和 `train_ratio`：
+
+```yaml
+train:
+  target: downstream.flare.data.dataset_split.FlareDatasetSplit
+  params:
+    split: train
+    validation_ratio: 0.2
+    train_ratio: 0.1
+
+validation:
+  target: downstream.flare.data.dataset_uni.FlareDatasetUni
+  params:
+    split: validation
+    validation_ratio: 0.2
+```
+
 ## SolarPredictor 分类模型
 
 `SolarPredictor.py` 从 SolarCHIP checkpoint 中严格提取 HMI 分支，不在最终模型中注册非 HMI 模态或任何 decoder。checkpoint 可以是 Lightning 的 `{"state_dict": ...}` 或纯 Tensor state dict；HMI encoder、CNN `cls_proj` 和 contrastive projector 都要求键名及 shape 严格匹配，避免错误配置被随机初始化。
@@ -247,12 +277,14 @@ python3 -m py_compile \
   downstream/flare/data/download_goes_flare_report.py \
   downstream/flare/data/prepare_flare_labels.py \
   downstream/flare/data/dataset.py \
-  downstream/flare/data/dataset_uni.py
+  downstream/flare/data/dataset_uni.py \
+  downstream/flare/data/dataset_split.py
 
 # 模型测试需要先激活项目的 solargpt/PyTorch 环境。
 python -m unittest \
   downstream.flare.tests.test_flare_dataset \
   downstream.flare.tests.test_flare_dataset_uni \
+  downstream.flare.tests.test_flare_dataset_split \
   downstream.flare.tests.test_solar_predictor \
   downstream.flare.tests.test_flare_test
 ```
